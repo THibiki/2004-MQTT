@@ -10,17 +10,25 @@
 
 int main() {
   stdio_init_all();
+  sleep_ms(2000);
+  printf("Booting...\n");
 
-  if (cyw43_arch_init()) {
+  if (cyw43_arch_init_with_country(CYW43_COUNTRY_SINGAPORE)) {
     printf("WiFi init failed\n");
     return -1;
   }
   cyw43_arch_enable_sta_mode();
 
   printf("Connecting WiFi…\n");
-  if (cyw43_arch_wifi_connect_timeout_ms(WIFI_SSID, WIFI_PSK, CYW43_AUTH_WPA2_AES_PSK, 10000)) {
-    printf("WiFi connect failed\n");
-    return -1;
+  int rc = cyw43_arch_wifi_connect_timeout_ms(WIFI_SSID, WIFI_PSK,
+          CYW43_AUTH_WPA2_AES_PSK, 30000);
+
+  int ls = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
+  printf("connect rc=%d, link_status=%d\n", rc, ls);
+
+  if (rc) {
+      printf("WiFi connect failed\n");
+      return -1;
   }
   printf("WiFi OK, IP ready\n");
 

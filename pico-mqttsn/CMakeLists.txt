@@ -17,6 +17,7 @@ add_executable(pico_mqttsn
 target_include_directories(pico_mqttsn PRIVATE src)
 
 pico_enable_stdio_usb(pico_mqttsn 1)
+pico_enable_stdio_uart(pico_mqttsn 0)
 
 target_link_libraries(pico_mqttsn 
     pico_stdlib 
