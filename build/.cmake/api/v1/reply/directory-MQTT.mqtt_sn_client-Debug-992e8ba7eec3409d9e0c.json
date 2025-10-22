@@ -1,0 +1,14 @@
+{
+	"backtraceGraph" : 
+	{
+		"commands" : [],
+		"files" : [],
+		"nodes" : []
+	},
+	"installers" : [],
+	"paths" : 
+	{
+		"build" : "MQTT/mqtt_sn_client",
+		"source" : "MQTT/mqtt_sn_client"
+	}
+}
