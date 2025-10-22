@@ -1,0 +1,11 @@
+# Ignore everything under build/
+**/build/**
+
+# BUT keep the final binaries we care about
+!**/build/*.uf2
+
+# Ignore all .vscode settings folders
+**/.vscode/**
+
+# Ignore secrets
+/project/wifi_config.h
