@@ -8,29 +8,58 @@
 #define GW_IP     "192.168.56.1"   // your laptop IP
 #define GW_PORT   1884
 
+static const char* link_to_str(int s) {
+    switch (s) {
+        case CYW43_LINK_DOWN:     return "DOWN";
+        case CYW43_LINK_JOIN:     return "JOIN (auth/assoc in progress)";
+        case CYW43_LINK_NOIP:     return "NO IP (DHCP in progress)";
+        case CYW43_LINK_UP:       return "UP (connected + IP)";
+        case CYW43_LINK_FAIL:     return "FAIL (general)";
+        case CYW43_LINK_NONET:    return "NO NETWORK (SSID not found)";
+        case CYW43_LINK_BADAUTH:  return "BAD AUTH (password?)";
+        default:                  return "UNKNOWN";
+    }
+}
+
+static int wifi_connect(void){
+  
+  if (cyw43_arch_init_with_country(CYW43_COUNTRY_SINGAPORE)) {
+    printf("WiFi init failed\n");
+    return 1;
+  }
+
+  cyw43_arch_enable_sta_mode();
+
+  printf("Connecting to WiFi SSID=%s ...\n", WIFI_SSID);
+  int err = cyw43_arch_wifi_connect_timeout_ms(
+      WIFI_SSID, WIFI_PSK, CYW43_AUTH_WPA2_AES_PSK, 10000
+  );
+
+  if (err) {
+      int ls = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
+      printf("failed to connect (err=%d, link=%d %s)\n", err, ls, link_to_str(ls));
+      return 1;
+  }
+
+  // Give DHCP a moment to complete if we arrived here during NOIP
+  for (int i = 0; i < 30; ++i) {
+      int ls = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
+      printf("link=%d %s\n", ls, link_to_str(ls));
+      if (ls == CYW43_LINK_UP) break;
+      sleep_ms(200);
+  }
+  printf("WiFi OK, IP ready\n");
+
+}
+
 int main() {
   stdio_init_all();
   sleep_ms(2000);
   printf("Booting...\n");
 
-  if (cyw43_arch_init_with_country(CYW43_COUNTRY_SINGAPORE)) {
-    printf("WiFi init failed\n");
-    return -1;
+  if (wifi_connect() != 0){
+      return 1;
   }
-  cyw43_arch_enable_sta_mode();
-
-  printf("Connecting WiFi…\n");
-  int rc = cyw43_arch_wifi_connect_timeout_ms(WIFI_SSID, WIFI_PSK,
-          CYW43_AUTH_WPA2_AES_PSK, 30000);
-
-  int ls = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
-  printf("connect rc=%d, link_status=%d\n", rc, ls);
-
-  if (rc) {
-      printf("WiFi connect failed\n");
-      return -1;
-  }
-  printf("WiFi OK, IP ready\n");
 
   mqttsn_client_t cli;
   if (!mqttsn_init(&cli, GW_IP, GW_PORT, "pico-1", 30)) {
