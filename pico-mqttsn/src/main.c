@@ -1,94 +1,166 @@
 #include <stdio.h>
+#include <string.h>
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
-#include "mqttsn_client.h"
+#include "lwip/ip4_addr.h"
+#include "lwip/netif.h"
+#include "lwip/dhcp.h"
 
-#define WIFI_SSID "SM-Hotspot"
-#define WIFI_PSK  "shimin0323"
-#define GW_IP     "192.168.56.1"   // your laptop IP
-#define GW_PORT   1884
+/* Added includes for UDP send */
+#include "lwip/udp.h"
+#include "lwip/pbuf.h"
+#include "lwip/ip_addr.h"
+#include "lwip/err.h"
+
+#define WIFI_SSID "Hibiki"
+#define WIFI_PSK  ""   // empty -> OPEN hotspot. Put password here if using WPA2.
+
+/* STATIC IP fallback settings */
+#define STATIC_IP_A 10
+#define STATIC_IP_B 117
+#define STATIC_IP_C 49
+#define STATIC_IP_D 200
+#define STATIC_GW_A 10
+#define STATIC_GW_B 117
+#define STATIC_GW_C 49
+#define STATIC_GW_D 177
+#define STATIC_NM_A 255
+#define STATIC_NM_B 255
+#define STATIC_NM_C 255
+#define STATIC_NM_D 0
+
+/* Destination for UDP test - CHANGE to your laptop's IP and port */
+static const char *DEST_IP = "10.117.49.177";
+static const uint16_t DEST_PORT = 5005;
+
+/* Helper to send a UDP test packet */
+static void send_udp_test(const char *msg) {
+    printf("DEBUG: netif ip=%s, gw=%s, dest=%s\n",
+       ip4addr_ntoa(netif_ip4_addr(cyw43_state.netif)),
+       ip4addr_ntoa(netif_gw4_addr(cyw43_state.netif)),
+       DEST_IP);
+    struct udp_pcb *pcb = udp_new();
+    if (!pcb) {
+        printf("udp_new failed\n");
+        return;
+    }
+    ip_addr_t dest;
+    if (!ipaddr_aton(DEST_IP, &dest)) {
+        printf("ipaddr_aton failed for %s\n", DEST_IP);
+        udp_remove(pcb);
+        return;
+    }
+
+    struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, strlen(msg), PBUF_RAM);
+    if (!p) {
+        printf("pbuf_alloc failed\n");
+        udp_remove(pcb);
+        return;
+    }
+    memcpy(p->payload, msg, strlen(msg));
+    err_t e = udp_sendto(pcb, p, &dest, DEST_PORT);
+    printf("udp_sendto -> err=%d\n", e);
+    pbuf_free(p);
+    udp_remove(pcb);
+}
 
 static const char* link_to_str(int s) {
     switch (s) {
-        case CYW43_LINK_DOWN:     return "DOWN";
-        case CYW43_LINK_JOIN:     return "JOIN (auth/assoc in progress)";
-        case CYW43_LINK_NOIP:     return "NO IP (DHCP in progress)";
-        case CYW43_LINK_UP:       return "UP (connected + IP)";
-        case CYW43_LINK_FAIL:     return "FAIL (general)";
-        case CYW43_LINK_NONET:    return "NO NETWORK (SSID not found)";
-        case CYW43_LINK_BADAUTH:  return "BAD AUTH (password?)";
-        default:                  return "UNKNOWN";
+    case CYW43_LINK_DOWN:    return "DOWN";
+    case CYW43_LINK_JOIN:    return "JOIN";
+    case CYW43_LINK_NOIP:    return "NOIP";
+    case CYW43_LINK_UP:      return "UP";
+    case CYW43_LINK_FAIL:    return "FAIL";
+    case CYW43_LINK_NONET:   return "NONET";
+    case CYW43_LINK_BADAUTH: return "BADAUTH";
+    default: return "UNK";
     }
 }
 
-static int wifi_connect(void){
-  
-  if (cyw43_arch_init_with_country(CYW43_COUNTRY_SINGAPORE)) {
-    printf("WiFi init failed\n");
-    return 1;
-  }
+int main(void) {
+    stdio_init_all();
+    sleep_ms(500);
+    printf("\n--- WiFi static-fallback + UDP test boot ---\n");
 
-  cyw43_arch_enable_sta_mode();
+    if (cyw43_arch_init_with_country(CYW43_COUNTRY_SINGAPORE)) {
+        printf("cyw43 init failed\n");
+        while (true) sleep_ms(1000);
+    }
+    cyw43_arch_enable_sta_mode();
 
-  printf("Connecting to WiFi SSID=%s ...\n", WIFI_SSID);
-  int err = cyw43_arch_wifi_connect_timeout_ms(
-      WIFI_SSID, WIFI_PSK, CYW43_AUTH_WPA2_AES_PSK, 10000
-  );
+    int auth = (strlen(WIFI_PSK) == 0) ? CYW43_AUTH_OPEN : CYW43_AUTH_WPA2_MIXED_PSK;
+    printf("Connecting to SSID='%s' auth=%d ...\n", WIFI_SSID, auth);
 
-  if (err) {
-      int ls = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
-      printf("failed to connect (err=%d, link=%d %s)\n", err, ls, link_to_str(ls));
-      return 1;
-  }
+    int err = cyw43_arch_wifi_connect_timeout_ms(WIFI_SSID, WIFI_PSK, auth, 30000);
+    printf("connect returned %d\n", err);
 
-  // Give DHCP a moment to complete if we arrived here during NOIP
-  for (int i = 0; i < 30; ++i) {
-      int ls = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
-      printf("link=%d %s\n", ls, link_to_str(ls));
-      if (ls == CYW43_LINK_UP) break;
-      sleep_ms(200);
-  }
-  printf("WiFi OK, IP ready\n");
-
-}
-
-int main() {
-  stdio_init_all();
-  sleep_ms(2000);
-  printf("Booting...\n");
-
-  if (wifi_connect() != 0){
-      return 1;
-  }
-
-  mqttsn_client_t cli;
-  if (!mqttsn_init(&cli, GW_IP, GW_PORT, "pico-1", 30)) {
-    printf("MQTT-SN init failed\n");
-    return -1;
-  }
-  if (!mqttsn_connect(&cli, true)) {
-    printf("CONNECT failed\n");
-    return -1;
-  }
-  printf("CONNACK OK\n");
-
-  uint16_t tid = 0;
-  if (!mqttsn_register(&cli, "sensors/pico-1/temp", &tid)) {
-    printf("REGISTER failed\n"); return -1;
-  }
-  printf("REGACK OK, topicId=%u\n", tid);
-
-  // demo loop: publish QoS0 every 2s
-  for(;;){
-    char payload[16];
-    float v = 24.0f + (to_ms_since_boot(get_absolute_time())/1000)%10;
-    int n = snprintf(payload, sizeof(payload), "%.1f", v);
-    if (!mqttsn_publish_qos0(&cli, tid, payload, (uint16_t)n)) {
-      printf("PUBLISH fail\n");
+    if (cyw43_state.netif) {
+        printf("Starting DHCP explicitly\n");
+        dhcp_start(cyw43_state.netif);
     } else {
-      printf("PUBLISHED: %s\n", payload);
+        printf("No cyw43 netif available after connect\n");
     }
-    cyw43_arch_poll();
-    sleep_ms(2000);
-  }
+
+    /* Wait up to 30s for DHCP to assign an IP */
+    bool got_ip = false;
+    for (int t = 0; t < 150; ++t) { // 150 * 200ms = 30s
+        int ls = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
+        printf("status: %s\n", link_to_str(ls));
+        if (ls == CYW43_LINK_BADAUTH) {
+            printf("BAD AUTH - check SSID/password\n");
+            break;
+        }
+        if (ls == CYW43_LINK_UP && cyw43_state.netif) {
+            const ip4_addr_t* ip = netif_ip4_addr(cyw43_state.netif);
+            if (ip && ip4_addr_isany(ip) == 0) {
+                printf("GOT IP (DHCP): %s\n", ip4addr_ntoa(ip));
+                got_ip = true;
+                break;
+            }
+        }
+        sleep_ms(200);
+    }
+
+    if (got_ip) {
+        /* If DHCP succeeded, send UDP test */
+        printf("Sending UDP test after DHCP...\n");
+        printf("DEBUG: netif ip=%s, gw=%s, dest=%s\n",
+            ip4addr_ntoa(netif_ip4_addr(cyw43_state.netif)),
+            ip4addr_ntoa(netif_gw4_addr(cyw43_state.netif)),
+            DEST_IP);
+        send_udp_test("Hello from PicoW (DHCP)");
+    } else if (cyw43_state.netif) {
+        /* DHCP failed -> set static IP as fallback and then send UDP test */
+        ip4_addr_t ip, gw, nm;
+        IP4_ADDR(&ip, STATIC_IP_A, STATIC_IP_B, STATIC_IP_C, STATIC_IP_D);
+        IP4_ADDR(&gw, STATIC_GW_A, STATIC_GW_B, STATIC_GW_C, STATIC_GW_D);
+        IP4_ADDR(&nm, STATIC_NM_A, STATIC_NM_B, STATIC_NM_C, STATIC_NM_D);
+
+        netif_set_addr(cyw43_state.netif, &ip, &nm, &gw);
+        netif_set_up(cyw43_state.netif);
+        printf("Set static IP: %s  GW:%s\n", ip4addr_ntoa(&ip), ip4addr_ntoa(&gw));
+        printf("DEBUG: netif ip=%s, gw=%s, dest=%s\n",
+            ip4addr_ntoa(netif_ip4_addr(cyw43_state.netif)),
+            ip4addr_ntoa(netif_gw4_addr(cyw43_state.netif)),
+            DEST_IP);
+        printf("Sending UDP test after static IP...\n");
+        send_udp_test("Hello from PicoW (STATIC)");
+    } else {
+        printf("No netif available; can't send UDP\n");
+    }
+
+    /* main loop: print netif IP every 5s */
+    while (true) {
+        if (cyw43_state.netif) {
+            const ip4_addr_t* ip = netif_ip4_addr(cyw43_state.netif);
+            if (ip) {
+                printf("NETIF IP: %s\n", ip4addr_ntoa(ip));
+            } else {
+                printf("NETIF exists but ip==NULL\n");
+            }
+        } else {
+            printf("NO netif\n");
+        }
+        sleep_ms(5000);
+    }
 }
