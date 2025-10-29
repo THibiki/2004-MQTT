@@ -14,8 +14,9 @@
 #endif
 
 // MQTT-SN Gateway configuration
-#define GATEWAY_IP "192.168.1.100"
-#define GATEWAY_PORT 1883
+// Updated to your laptop IP from ipconfig output and recommended MQTT-SN UDP port
+#define GATEWAY_IP "10.132.53.215"
+#define GATEWAY_PORT 1884
 
 // Global client instance
 mqtt_sn_client_t client;
