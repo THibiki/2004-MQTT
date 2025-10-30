@@ -194,7 +194,13 @@ int main(int argc, char **argv) {
                 if (r < 6) break;
                 uint16_t proposed_tid = (buf[2] << 8) | buf[3];
                 uint16_t msg_id = (buf[4] << 8) | buf[5];
-                const char *topic_name = (const char*)&buf[6];
+                
+                // Calculate topic name length and ensure null termination
+                int topic_name_len = buf[0] - 6;  // Total length minus header
+                char topic_name[256];  // Buffer for topic name
+                memcpy(topic_name, &buf[6], topic_name_len);
+                topic_name[topic_name_len] = '\0';  // Ensure null termination
+                
                 uint16_t assigned = g_next_topic_id++;
                 add_topic_mapping(assigned, topic_name);
                 // Send REGACK

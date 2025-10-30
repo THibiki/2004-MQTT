@@ -5,24 +5,25 @@ add_executable(mqtt_sn_client
         main.c
         mqtt_sn_client.c
         mqtt_sn_messages.c
-        arch/sys_arch.c
         )
 
 # Add include directories for lwIP configuration files
 target_include_directories(mqtt_sn_client PRIVATE 
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/arch
 )
 
 # pull in common dependencies
 target_link_libraries(mqtt_sn_client 
     pico_stdlib
-    pico_async_context
-    pico_cyw43_arch
-    pico_lwip_cyw43_arch
-    pico_lwip_udp
-    pico_lwip_core
+    pico_cyw43_arch_lwip_threadsafe_background
+    pico_lwip_nosys
     )
+
+# Define NO_SYS for lwIP
+target_compile_definitions(mqtt_sn_client PRIVATE 
+    NO_SYS=1
+    PICO_CYW43_ARCH_THREADSAFE_BACKGROUND=1
+)
 
 # enable usb output, disable uart output
 pico_enable_stdio_usb(mqtt_sn_client 1)

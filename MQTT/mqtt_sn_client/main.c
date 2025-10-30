@@ -6,16 +6,14 @@
 
 // WiFi credentials - set these for your network
 #ifndef WIFI_SSID
-#define WIFI_SSID "Hibiki"
+#define WIFI_SSID "jer"
 #endif
 
 #ifndef WIFI_PASSWORD
-#define WIFI_PASSWORD "Asura96Kai"
+#define WIFI_PASSWORD "jeraldgoh"
 #endif
 
-// MQTT-SN Gateway configuration
-// Updated to your laptop IP from ipconfig output and recommended MQTT-SN UDP port
-#define GATEWAY_IP "10.132.53.215"
+#define GATEWAY_IP "172.30.67.75"
 #define GATEWAY_PORT 1884
 
 // Global client instance

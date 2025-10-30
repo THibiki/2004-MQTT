@@ -71,7 +71,7 @@
 typedef struct {
     uint8_t length;
     uint8_t msg_type;
-    uint8_t data[];
+    uint8_t *data;
 } __attribute__((packed)) mqtt_sn_message_t;
 
 // CONNECT Message Structure
@@ -116,7 +116,7 @@ typedef struct {
     uint8_t flags;
     uint16_t topic_id;
     uint16_t msg_id;
-    uint8_t data[];
+    uint8_t *data;
 } __attribute__((packed)) mqtt_sn_publish_t;
 
 // PUBACK Message Structure
@@ -136,7 +136,7 @@ typedef struct {
     uint16_t msg_id;
     union {
         uint16_t topic_id;
-        char topic_name[];
+        char topic_name[MQTT_SN_TOPIC_NAME_MAX_LEN];
     };
 } __attribute__((packed)) mqtt_sn_subscribe_t;
 

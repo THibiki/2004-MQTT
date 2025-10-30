@@ -1,8 +1,6 @@
 #include "sys_arch.h"
-#include "pico/stdlib.h"
-#include "pico/sync.h"
-#include "pico/time.h"
-#include "pico/multicore.h"
+#include "lwip/err.h"
+#include "lwip/sys.h"
 
 // Mutex functions
 err_t sys_mutex_new(sys_mutex_t *mutex) {
@@ -95,90 +93,96 @@ err_t sys_mbox_new(sys_mbox_t *mbox, int size) {
     
     mbox->head = 0;
     mbox->tail = 0;
+    mbox->size = (size > SYS_MBOX_SIZE) ? SYS_MBOX_SIZE : size;
     
     // Initialize semaphores
-    if (sys_sem_new(&mbox->not_empty, 0) != ERR_OK) return ERR_MEM;
-    if (sys_sem_new(&mbox->not_full, size) != ERR_OK) {
-        sys_sem_free(&mbox->not_empty);
-        return ERR_MEM;
-    }
+    sem_init(&mbox->not_empty, 0, mbox->size);
+    sem_init(&mbox->not_full, mbox->size, mbox->size);
     
     // Initialize mutex
-    if (sys_mutex_new(&mbox->mutex) != ERR_OK) {
-        sys_sem_free(&mbox->not_empty);
-        sys_sem_free(&mbox->not_full);
-        return ERR_MEM;
-    }
+    mutex_init(&mbox->lock);
     
     return ERR_OK;
 }
 
 void sys_mbox_post(sys_mbox_t *mbox, void *msg) {
-    if (!mbox || !msg) return;
+    if (!mbox) return;
     
-    sys_mutex_lock(&mbox->mutex);
+    // Wait for space to be available
+    sem_acquire_blocking(&mbox->not_full);
+    
+    mutex_enter_blocking(&mbox->lock);
     mbox->msg[mbox->tail] = msg;
-    mbox->tail = (mbox->tail + 1) % 10;
-    sys_mutex_unlock(&mbox->mutex);
+    mbox->tail = (mbox->tail + 1) % SYS_MBOX_SIZE;
+    mutex_exit(&mbox->lock);
     
-    sys_sem_signal(&mbox->not_empty);
+    sem_release(&mbox->not_empty);
 }
 
 err_t sys_mbox_trypost(sys_mbox_t *mbox, void *msg) {
-    if (!mbox || !msg) return ERR_ARG;
+    if (!mbox) return ERR_ARG;
     
-    sys_mutex_lock(&mbox->mutex);
-    if ((mbox->tail + 1) % 10 == mbox->head) {
-        sys_mutex_unlock(&mbox->mutex);
+    // Try to acquire space without blocking
+    if (!sem_try_acquire(&mbox->not_full, 1)) {
         return ERR_MEM; // Full
     }
     
+    mutex_enter_blocking(&mbox->lock);
     mbox->msg[mbox->tail] = msg;
-    mbox->tail = (mbox->tail + 1) % 10;
-    sys_mutex_unlock(&mbox->mutex);
+    mbox->tail = (mbox->tail + 1) % SYS_MBOX_SIZE;
+    mutex_exit(&mbox->lock);
     
-    sys_sem_signal(&mbox->not_empty);
+    sem_release(&mbox->not_empty);
     return ERR_OK;
 }
 
 u32_t sys_arch_mbox_fetch(sys_mbox_t *mbox, void **msg, u32_t timeout) {
     if (!mbox || !msg) return SYS_ARCH_TIMEOUT;
     
-    if (sys_arch_sem_wait(&mbox->not_empty, timeout) == SYS_ARCH_TIMEOUT) {
-        return SYS_ARCH_TIMEOUT;
+    // Wait for a message to be available
+    if (timeout == 0) {
+        if (!sem_try_acquire(&mbox->not_empty, 1)) {
+            return SYS_ARCH_TIMEOUT;
+        }
+    } else if (timeout == SYS_ARCH_TIMEOUT) {
+        sem_acquire_blocking(&mbox->not_empty);
+    } else {
+        if (!sem_acquire_timeout_ms(&mbox->not_empty, timeout)) {
+            return SYS_ARCH_TIMEOUT;
+        }
     }
     
-    sys_mutex_lock(&mbox->mutex);
+    mutex_enter_blocking(&mbox->lock);
     *msg = mbox->msg[mbox->head];
-    mbox->head = (mbox->head + 1) % 10;
-    sys_mutex_unlock(&mbox->mutex);
+    mbox->head = (mbox->head + 1) % SYS_MBOX_SIZE;
+    mutex_exit(&mbox->lock);
     
-    sys_sem_signal(&mbox->not_full);
+    sem_release(&mbox->not_full);
     return 0;
 }
 
 u32_t sys_arch_mbox_tryfetch(sys_mbox_t *mbox, void **msg) {
     if (!mbox || !msg) return SYS_ARCH_TIMEOUT;
     
-    if (sys_arch_sem_wait(&mbox->not_empty, 0) == SYS_ARCH_TIMEOUT) {
+    if (!sem_try_acquire(&mbox->not_empty, 1)) {
         return SYS_ARCH_TIMEOUT;
     }
     
-    sys_mutex_lock(&mbox->mutex);
+    mutex_enter_blocking(&mbox->lock);
     *msg = mbox->msg[mbox->head];
-    mbox->head = (mbox->head + 1) % 10;
-    sys_mutex_unlock(&mbox->mutex);
+    mbox->head = (mbox->head + 1) % SYS_MBOX_SIZE;
+    mutex_exit(&mbox->lock);
     
-    sys_sem_signal(&mbox->not_full);
+    sem_release(&mbox->not_full);
     return 0;
 }
 
 void sys_mbox_free(sys_mbox_t *mbox) {
     if (!mbox) return;
     
-    sys_sem_free(&mbox->not_empty);
-    sys_sem_free(&mbox->not_full);
-    sys_mutex_free(&mbox->mutex);
+    // Pico SDK doesn't have explicit free functions for sync primitives
+    // The memory will be freed when the struct is freed
+    (void)mbox;
 }
 
 int sys_mbox_valid(sys_mbox_t *mbox) {
@@ -210,9 +214,4 @@ sys_prot_t sys_arch_protect(void) {
 void sys_arch_unprotect(sys_prot_t pval) {
     // Simple implementation - do nothing
     (void)pval;
-}
-
-// Time function
-u32_t sys_now(void) {
-    return to_ms_since_boot(get_absolute_time());
 }
