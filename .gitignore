@@ -1,0 +1,68 @@
+# Build artifacts
+build/
+*.uf2
+*.elf
+*.bin
+*.hex
+*.dis
+*.map
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+!pico_sdk_import.cmake
+
+# Generated files
+generated/
+pico-sdk/
+*.o
+*.a
+*.so
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+*.egg
+
+# Tools and utilities
+tools/
+paho_pub.c
+paho_sub.c
+udp_relay_windows.py
+test_block_transfer.py
+
+# Gateway (optional - can be built separately)
+gateway/
+
+# External libraries (build artifacts only)
+*.o
+*.a
+
+# FatFs documentation (optional)
+lib/fatfs/documents/
+
+# Old/backup directories
+wifi_driver/
+MQTT/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
