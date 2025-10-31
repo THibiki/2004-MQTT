@@ -1,0 +1,38 @@
+#ifndef BLOCK_TRANSFER_H
+#define BLOCK_TRANSFER_H
+
+#include "pico/stdlib.h"
+
+// Block transfer constants
+#define BLOCK_CHUNK_SIZE 128        // Size of each chunk (adjust based on MQTT-SN packet limits)
+#define BLOCK_MAX_CHUNKS 100        // Maximum number of chunks per block
+#define BLOCK_BUFFER_SIZE 10240     // 10KB buffer for large messages
+
+// Block transfer header structure
+typedef struct {
+    uint16_t block_id;      // Unique block identifier
+    uint16_t part_num;      // Current part number (1-based)
+    uint16_t total_parts;   // Total number of parts
+    uint16_t data_len;      // Length of data in this chunk
+} block_header_t;
+
+// Block reassembly structure
+typedef struct {
+    uint16_t block_id;
+    uint16_t total_parts;
+    uint16_t received_parts;
+    bool *received_mask;    // Track which parts we've received
+    uint8_t *data_buffer;   // Buffer to store reassembled data
+    uint32_t total_length;  // Total length of complete message
+    uint32_t last_update;   // Timestamp of last received part
+} block_assembly_t;
+
+// Block transfer functions
+int block_transfer_init(void);
+int send_block_transfer(const char *topic, const uint8_t *data, size_t data_len);
+void process_block_chunk(const uint8_t *data, size_t len);
+void generate_large_message(char *buffer, size_t size);
+bool block_transfer_is_active(void);
+void block_transfer_check_timeout(void);
+
+#endif // BLOCK_TRANSFER_H
