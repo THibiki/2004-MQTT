@@ -86,8 +86,11 @@ class MQTTSNGateway:
     def handle_publish(self, data, addr):
         client_ip = addr[0]  # Track by IP only, ignore port
         if client_ip not in self.clients:
-            print(f"   ⚠️  Client {client_ip} not connected")
-            return
+            print(f"   ⚠️  Client {client_ip} not in client list, adding now...")
+            self.clients[client_ip] = {'connected': True, 'topics': set(), 'last_addr': addr}
+        else:
+            # Update last_addr for this client
+            self.clients[client_ip]['last_addr'] = addr
             
         # MQTT-SN PUBLISH format:
         # Byte 0: Length
@@ -169,11 +172,49 @@ class MQTTSNGateway:
     def on_mqtt_connect(self, client, userdata, flags, rc):
         if rc == 0:
             print("✅ Connected to MQTT broker successfully")
+            # Subscribe only to command topics (not data topics that Pico publishes)
+            client.subscribe("pico/test")
+            client.subscribe("pico/command")
+            print("✅ Subscribed to pico/test and pico/command for forwarding to Pico")
         else:
             print(f"❌ Failed to connect to MQTT broker: {rc}")
     
     def on_mqtt_message(self, client, userdata, msg):
-        print(f"📨 MQTT message: {msg.topic} = {msg.payload}")
+        print(f"📨 MQTT message received: {msg.topic} = {msg.payload.decode('utf-8', errors='ignore')}")
+        print(f"   Debug: Known clients = {list(self.clients.keys())}")
+        
+        # Forward message to Pico W if topic starts with "pico/"
+        if msg.topic.startswith("pico/"):
+            print(f"   Topic starts with 'pico/', attempting to forward...")
+            # Find the Pico client
+            if len(self.clients) == 0:
+                print(f"   ⚠️  No clients connected! Cannot forward.")
+                return
+                
+            for client_ip, client_info in self.clients.items():
+                print(f"   Checking client {client_ip}: connected={client_info.get('connected')}")
+                if client_info.get('connected'):
+                    pico_addr = client_info.get('last_addr')
+                    print(f"   Found connected client at {pico_addr}")
+                    if pico_addr:
+                        # Build MQTT-SN PUBLISH packet
+                        topic_bytes = msg.topic.encode('utf-8')
+                        payload = msg.payload
+                        
+                        # MQTT-SN PUBLISH format: Length, MsgType (0x0C), Flags, Topic, [MsgID], Payload
+                        flags = 0x00  # QoS 0, Topic name
+                        packet_len = 3 + len(topic_bytes) + len(payload)
+                        
+                        packet = bytes([packet_len, 0x0C, flags]) + topic_bytes + payload
+                        
+                        # Debug: show packet details
+                        hex_packet = ' '.join(f'{b:02X}' for b in packet[:min(30, len(packet))])
+                        print(f"   Building packet: len={packet_len}, topic={msg.topic}, payload={len(payload)} bytes")
+                        print(f"   Packet hex: {hex_packet}")
+                        
+                        self.udp_socket.sendto(packet, pico_addr)
+                        print(f"   ✅ Forwarded {len(packet)} bytes to Pico at {pico_addr}")
+                        break
     
     def cleanup(self):
         if self.udp_socket:

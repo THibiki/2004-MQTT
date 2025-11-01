@@ -56,6 +56,8 @@ Button-controlled IoT system with WiFi connectivity, MQTT-SN messaging with QoS 
 - **Non-blocking**: Uses `cyw43_arch_poll()` for continuous operation
 
 ### ✅ MQTT-SN Messaging with QoS Support
+
+#### Publishing (Pico → Gateway → Broker)
 - **QoS 0 Mode**: Fire-and-forget, publishes sequence messages every 5 seconds
   - Format: `seq=X,timestamp=Y`
   - Topic: `pico/data`
@@ -66,6 +68,18 @@ Button-controlled IoT system with WiFi connectivity, MQTT-SN messaging with QoS 
   - Automatic retry (up to 3 attempts, 1s timeout each)
   - Publishes sequence messages every 5 seconds
   - Shows success/failure for each message
+
+#### Subscribing (Broker → Gateway → Pico)
+- **Subscribed Topics**:
+  - `pico/test` - Echo messages back to `pico/response` with "ACK: " prefix
+  - `pico/command` - Handle commands (e.g., "ping" → responds "pong")
+  - `pico/chunks` - Block transfer chunks
+  - `pico/block` - Block transfer data
+  
+- **Message Handler**: Automatically processes incoming messages
+  - Displays topic, size, and content (printable text or hex)
+  - Custom responses based on topic
+  - Continuous polling via `mqttsn_poll()`
 
 ### ✅ Image Transfer with Block Transfer
 - **Image Source**: Reads `download.jpg` from SD card (up to 10KB)

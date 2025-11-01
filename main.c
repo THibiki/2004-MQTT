@@ -22,7 +22,8 @@
 static bool wifi_initialized = false;
 static bool mqtt_connected = false;
 static bool sd_card_mounted = false;
-static uint8_t current_qos = 1;  // Default QoS 1
+static uint8_t current_qos = 0;  // Start with QoS 0
+static uint8_t qos_mode = 0;     // 0=QoS0, 1=QoS1, 2=Stopped
 static uint32_t last_button_press[3] = {0};
 static uint32_t last_sd_check = 0;
 #define SD_CHECK_INTERVAL_MS 1000  // Check SD card every second
@@ -39,7 +40,53 @@ bool button_pressed(uint gpio_pin, int button_index) {
     return false;
 }
 
-// Check if SD card is present and mounted
+// MQTT message callback - handles incoming messages from subscribed topics
+void on_message_received(const char *topic, const uint8_t *data, size_t len) {
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    
+    printf("\n[%lu ms] 📬 Received message:\n", now);
+    printf("  Topic: %s\n", topic);
+    printf("  Size: %zu bytes\n", len);
+    
+    // Print data as string if printable, otherwise as hex
+    bool is_printable = true;
+    for (size_t i = 0; i < len && i < 100; i++) {
+        if (data[i] < 32 && data[i] != '\n' && data[i] != '\r' && data[i] != '\t') {
+            is_printable = false;
+            break;
+        }
+    }
+    
+    if (is_printable) {
+        printf("  Data: %.*s\n\n", (int)len, data);
+    } else {
+        printf("  Data (hex): ");
+        for (size_t i = 0; i < len && i < 32; i++) {
+            printf("%02X ", data[i]);
+        }
+        if (len > 32) printf("... (%zu more bytes)", len - 32);
+        printf("\n\n");
+    }
+    
+    // Handle specific topics
+    if (strcmp(topic, "pico/test") == 0) {
+        // Echo back with "ACK: " prefix
+        char response[128];
+        snprintf(response, sizeof(response), "ACK: %.*s", (int)len, data);
+        mqttsn_publish("pico/response", (uint8_t*)response, strlen(response), current_qos);
+        printf("  → Sent acknowledgment to pico/response\n\n");
+    }
+    else if (strcmp(topic, "pico/command") == 0) {
+        // Handle commands (you can add custom commands here)
+        if (len == 4 && memcmp(data, "ping", 4) == 0) {
+            const char *pong = "pong";
+            mqttsn_publish("pico/response", (uint8_t*)pong, 4, current_qos);
+            printf("  → Responded with 'pong'\n\n");
+        }
+    }
+}
+
+// Check if SD card is accessible (returns true if mounted and working)
 bool check_sd_card_status() {
     // Check hardware initialization status first
     if (!sd_card_is_initialized()) {
@@ -253,7 +300,7 @@ int main() {
     printf("  ✓ Buttons ready:\n");
     printf("    • GPIO %d: WiFi & MQTT Init\n", BTN_WIFI_INIT);
     printf("    • GPIO %d: Image Transfer\n", BTN_BLOCK_TRANSFER);
-    printf("    • GPIO %d: Toggle QoS (current: QoS %d)\n\n", BTN_QOS_TOGGLE, current_qos);
+    printf("    • GPIO %d: Cycle Mode (QoS0 → QoS1 → Stop → ...)\n\n", BTN_QOS_TOGGLE);
     sleep_ms(1000);
     
     // Initialize block transfer system
@@ -355,10 +402,15 @@ int main() {
             
             printf("  ✓ Connected to %s:%d\n", gateway_ip, gateway_port);
             
+            // Register message callback for incoming messages
+            mqttsn_set_message_callback(on_message_received);
+            
+            // Subscribe to topics
             mqttsn_subscribe("pico/test", 0);
+            mqttsn_subscribe("pico/command", 0);
             mqttsn_subscribe("pico/chunks", 0);
             mqttsn_subscribe("pico/block", 0);
-            printf("  ✓ Subscribed to topics\n\n");
+            printf("  ✓ Subscribed to topics: pico/test, pico/command, pico/chunks, pico/block\n\n");
             
             wifi_initialized = true;
             mqtt_connected = true;
@@ -516,19 +568,25 @@ int main() {
         // Button 3: Toggle QoS (GPIO 22)
         // ═══════════════════════════════════════════════════════
         if (button_pressed(BTN_QOS_TOGGLE, 2)) {
-            current_qos = (current_qos == 0) ? 1 : 0;
-            printf("\n🔘 Button pressed: QoS toggled to %d\n", current_qos);
-            if (current_qos == 0) {
-                printf("   → QoS 0 mode: Will publish sequence messages every 5s\n\n");
+            // Cycle through: QoS 0 → QoS 1 → Stopped → QoS 0 → ...
+            qos_mode = (qos_mode + 1) % 3;
+            
+            printf("\n🔘 Button pressed: Mode changed\n");
+            if (qos_mode == 0) {
+                current_qos = 0;
+                printf("   → QoS 0 mode: Publishing every 5s (fire-and-forget)\n\n");
+            } else if (qos_mode == 1) {
+                current_qos = 1;
+                printf("   → QoS 1 mode: Publishing every 5s (with PUBACK)\n\n");
             } else {
-                printf("   → QoS 1 mode: Reliable image transfers with PUBACK\n\n");
+                printf("   → STOPPED: No publishing\n\n");
             }
         }
         
         // ═══════════════════════════════════════════════════════
         // QoS 0 Mode: Publish sequence messages every 5 seconds
         // ═══════════════════════════════════════════════════════
-        if (mqtt_connected && current_qos == 0 && (now - last_publish > 5000)) {
+        if (mqtt_connected && qos_mode == 0 && (now - last_publish > 5000)) {
             char message[64];
             snprintf(message, sizeof(message), "seq=%lu,timestamp=%lu", sequence_number, now);
             printf("[%lu ms] Publishing QoS 0: seq=%lu (fire-and-forget)\n", now, sequence_number);
@@ -540,7 +598,7 @@ int main() {
         // ═══════════════════════════════════════════════════════
         // QoS 1 Mode: Publish sequence messages every 5 seconds
         // ═══════════════════════════════════════════════════════
-        if (mqtt_connected && current_qos == 1 && (now - last_publish > 5000)) {
+        if (mqtt_connected && qos_mode == 1 && (now - last_publish > 5000)) {
             char message[64];
             snprintf(message, sizeof(message), "seq=%lu,timestamp=%lu", sequence_number, now);
             printf("[%lu ms] Publishing QoS 1: seq=%lu (waiting for PUBACK...)\n", now, sequence_number);

@@ -180,6 +180,49 @@ static int wait_for_message(uint8_t expected_type, uint16_t expected_msg_id, boo
                         return -1; // Buffer too small
                     }
                 }
+            } else if (msg_type == MQTTSN_PUBLISH) {
+                // Handle incoming PUBLISH messages immediately (even while waiting)
+                // This ensures we don't miss incoming messages during QoS 1 PUBACK wait
+                size_t pos = 2;
+                uint8_t flags = temp_buffer[pos++];
+                
+                // Extract topic
+                char topic[64] = {0};
+                size_t topic_len = 0;
+                
+                // Check known topics
+                if (pos + 10 < len && memcmp(&temp_buffer[pos], "pico/chunks", 11) == 0) {
+                    strcpy(topic, "pico/chunks");
+                    topic_len = 11;
+                } else if (pos + 12 < len && memcmp(&temp_buffer[pos], "pico/command", 12) == 0) {
+                    strcpy(topic, "pico/command");
+                    topic_len = 12;
+                } else if (pos + 9 < len && memcmp(&temp_buffer[pos], "pico/test", 9) == 0) {
+                    strcpy(topic, "pico/test");
+                    topic_len = 9;
+                } else if (pos + 9 < len && memcmp(&temp_buffer[pos], "pico/data", 9) == 0) {
+                    strcpy(topic, "pico/data");
+                    topic_len = 9;
+                } else if (pos + 10 < len && memcmp(&temp_buffer[pos], "pico/block", 10) == 0) {
+                    strcpy(topic, "pico/block");
+                    topic_len = 10;
+                }
+                
+                if (topic_len > 0) {
+                    pos += topic_len;
+                    
+                    // Skip message ID if QoS > 0
+                    if (flags & (MQTTSN_FLAG_QOS_1 | MQTTSN_FLAG_QOS_2)) {
+                        pos += 2;
+                    }
+                    
+                    // Extract payload
+                    if (pos < len && message_callback) {
+                        const uint8_t *data = &temp_buffer[pos];
+                        size_t data_len = len - pos;
+                        message_callback(topic, data, data_len);
+                    }
+                }
             } else {
                 // Not the message we want - re-queue it for later
                 if (!queue_push(temp_buffer, len)) {
@@ -457,6 +500,9 @@ int mqttsn_poll(void) {
             if (pos + 10 < len && memcmp(&buffer[pos], "pico/chunks", 11) == 0) {
                 strcpy(topic, "pico/chunks");
                 topic_len = 11;
+            } else if (pos + 12 < len && memcmp(&buffer[pos], "pico/command", 12) == 0) {
+                strcpy(topic, "pico/command");
+                topic_len = 12;
             } else if (pos + 9 < len && memcmp(&buffer[pos], "pico/test", 9) == 0) {
                 strcpy(topic, "pico/test");
                 topic_len = 9;
