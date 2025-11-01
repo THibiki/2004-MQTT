@@ -10,10 +10,11 @@ set(CMAKE_CXX_STANDARD 17)
 pico_sdk_init()
 
 # Add MQTT-SN source files
-set(MQTTSN_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../paho.mqtt-sn.embedded-c/MQTTSNPacket/src")
+set(MQTTSN_DIR "${CMAKE_CURRENT_LIST_DIR}/../../paho.mqtt-sn.embedded-c/MQTTSNPacket/src")
 
 add_executable(picow_wifi
   picow_wifi.c
+  wifi.c
 )
 
 pico_enable_stdio_usb(picow_wifi 1)

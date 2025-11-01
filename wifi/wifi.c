@@ -1,0 +1,171 @@
+#include <string.h>
+
+#include "pico/stdlib.h"
+#include "pico/cyw43_arch.h"
+
+#include "wifi.h"
+
+static simple_wifi_t wifi_state = {0};
+
+
+// Initialize WiFi with credentials
+int wifi_init(const char *ssid, const char *password) {
+    printf("\n=== Initializing WiFi ===\n");
+    
+    if (cyw43_arch_init_with_country(CYW43_COUNTRY_SINGAPORE)) {
+        printf("[WARNING] WiFi hardware init failed\n");
+        return -1;
+    }
+    
+    cyw43_arch_enable_sta_mode();
+    
+    // Store credentials
+    strncpy(wifi_state.ssid, ssid, sizeof(wifi_state.ssid) - 1);
+    strncpy(wifi_state.password, password, sizeof(wifi_state.password) - 1);
+    wifi_state.connected = false;
+    wifi_state.last_check_time = get_absolute_time();
+    wifi_state.last_reconnect_time = nil_time;
+    wifi_state.reconnect_count = 0;
+    wifi_state.disconnect_count = 0;
+    
+    printf("[INFO] WiFi initialized\n");
+    printf("[INFO] SSID: %s\n", wifi_state.ssid);
+    
+    return 0;
+}
+
+// Check if WiFi is connected
+bool wifi_is_connected(void) {
+    int link_status = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
+    bool currently_connected = (link_status == CYW43_LINK_UP);  // Checks if wifi connection is connected
+    
+    // Detect disconnection
+    if (wifi_state.connected && !currently_connected) {
+        printf("\n[WARNING]: WiFi disconnected!\n");
+        printf("[DEBUG] Link status changed to: %s\n", wifi_get_status());
+        wifi_state.connected = false;
+        wifi_state.disconnect_count++;
+    }
+    
+    return currently_connected;
+}
+
+// Get connection status as string
+const char* wifi_get_status(void) {
+    int link_status = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
+    
+    switch (link_status) {
+        case CYW43_LINK_DOWN: return "Disconnected";    // 0
+        case CYW43_LINK_JOIN: return "Connecting...";   // 1
+        case CYW43_LINK_NOIP: return "No IP";           // 2
+        case CYW43_LINK_UP: return "Connected";         // 3
+        case CYW43_LINK_FAIL: return "Failed";          // -1
+        case CYW43_LINK_NONET: return "Network Not Found";  // -2
+        case CYW43_LINK_BADAUTH: return "Bad Password";     // -3
+        default: return "Unknown";
+    }
+}
+
+// Connect to WiFi (blocking)
+int wifi_connect(void) {
+    printf("[INFO] Connecting to: %s\n", wifi_state.ssid);
+    
+    int result = cyw43_arch_wifi_connect_timeout_ms(
+        wifi_state.ssid, 
+        wifi_state.password, 
+        CYW43_AUTH_WPA2_AES_PSK, 
+        CONNECTION_TIMEOUT_MS
+    );
+    
+    // Sucessful Connection
+    if (result == 0) {
+        wifi_state.connected = true;
+
+        for (int i = 0; i < 50; i++) {
+            cyw43_arch_poll();
+            sleep_ms(10);
+            
+            int link_status = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
+            printf("[DEBUG] Link Status = %d", link_status);
+            if (link_status == CYW43_LINK_UP) {
+                break;  // Status updated to LINK_UP
+            }
+        }
+        
+        // Get and display IP address
+        struct netif *netif = netif_default;
+        if (netif != NULL) {
+            printf("[INFO] SSID=%s Connected!\n", wifi_state.ssid);
+            printf("[DEBUG] Link Status = %d", cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA));
+            printf("   IP Address: %s\n", ip4addr_ntoa(netif_ip4_addr(netif)));
+            printf("   Netmask: %s\n", ip4addr_ntoa(netif_ip4_netmask(netif)));
+            printf("   Gateway: %s\n", ip4addr_ntoa(netif_ip4_gw(netif)));
+        }
+        
+        if (wifi_state.reconnect_count > 0) {
+            printf("[INFO] Reconnected successfully (attempt #%lu)\n", 
+                   wifi_state.reconnect_count);
+        }
+        
+        return 0;
+    } else {
+        printf("[INFO] WiFi Connection failed: %d\n", result);
+        printf("   Status: %s\n", wifi_get_status());
+        wifi_state.connected = false;
+        return -1;
+    }
+}
+
+// Auto-reconnect logic
+void wifi_auto_reconnect(void) {
+    absolute_time_t now = get_absolute_time();
+    
+    // Check connection status periodically
+    if (absolute_time_diff_us(wifi_state.last_check_time, now) >= 
+        RECONNECT_CHECK_INTERVAL_MS * 1000) {
+        
+        wifi_state.last_check_time = now;
+        
+        if (!wifi_is_connected()) {
+            // Only attempt reconnect if enough time has passed
+            if (is_nil_time(wifi_state.last_reconnect_time) ||
+                absolute_time_diff_us(wifi_state.last_reconnect_time, now) >= 
+                RECONNECT_ATTEMPT_INTERVAL_MS * 1000) {
+                
+                wifi_state.last_reconnect_time = now;
+                wifi_state.reconnect_count++;
+                
+                printf("\n[INFO] Re-Connection Attempt #%lu\n", 
+                       wifi_state.reconnect_count);
+                
+                wifi_connect();
+            }
+        }
+    }
+}
+
+// Print connection statistics
+void wifi_print_stats(void) {
+    printf("\n╔════════════════════════════════════════╗\n");
+    printf("║          WiFi Statistics               ║\n");
+    printf("╚════════════════════════════════════════╝\n");
+    printf("SSID: %s\n", wifi_state.ssid);
+    printf("Status: %s\n", wifi_get_status());
+    printf("Disconnections: %lu\n", wifi_state.disconnect_count);
+    printf("Reconnect attempts: %lu\n", wifi_state.reconnect_count);
+    
+    if (wifi_state.connected) {
+        struct netif *netif = netif_default;
+        if (netif != NULL) {
+            printf("IP: %s\n", ip4addr_ntoa(netif_ip4_addr(netif)));
+        }
+    }
+}
+
+// Disconnect from WiFi
+void wifi_disconnect(void) {
+    printf("[INFO] Disconnecting from WiFi...\n");
+    cyw43_arch_disable_sta_mode();
+    wifi_state.connected = false;
+    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
+}
