@@ -66,3 +66,4 @@ MQTT/
 *.log
 *.tmp
 *.temp
+MQTT_SN_STATE_DIAGRAM.md

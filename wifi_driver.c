@@ -1,191 +1,260 @@
 #include "wifi_driver.h"
+#include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
-#include "lwip/pbuf.h"
-#include "lwip/udp.h"
-#include "lwip/dns.h"
-#include "lwip/ip4_addr.h"
-#include <stdio.h>
 #include <string.h>
+#include <stdio.h>
+#include <lwip/udp.h>
+#include <lwip/netif.h>
 
+static bool initialized = false;
+static bool connected = false;
 static struct udp_pcb *udp_pcb = NULL;
-static ip_addr_t target_addr;
-static uint16_t target_port;
-static uint8_t recv_buffer[1024];
+static uint8_t *recv_buffer = NULL;
 static size_t recv_len = 0;
-static bool recv_ready = false;
+static bool data_received = false;
 
-// UDP receive callback
+// Callback for UDP receive
 static void udp_recv_callback(void *arg, struct udp_pcb *pcb, struct pbuf *p,
-                             const ip_addr_t *addr, u16_t port) {
+                               const ip_addr_t *addr, u16_t port) {
     if (p != NULL) {
-        size_t len = p->len;
-        if (len <= sizeof(recv_buffer)) {
-            memcpy(recv_buffer, p->payload, len);
-            recv_len = len;
-            recv_ready = true;
-            printf("UDP received %zu bytes from %s:%d\n", len, 
-                   ip4addr_ntoa(ip_2_ip4(addr)), port);
+        printf("UDP callback: received %d bytes from port %d\n", p->len, port);
+        
+        if (recv_buffer != NULL) {
+            // Copy data up to the available buffer size
+            size_t copy_len = p->len < recv_len ? p->len : recv_len;
+            memcpy(recv_buffer, p->payload, copy_len);
+            // Update recv_len to the actual amount copied
+            recv_len = copy_len;
+            data_received = true;
+            printf("  -> Copied %d bytes to buffer\n", copy_len);
+        } else {
+            printf("  -> No receive buffer set, dropping packet\n");
         }
         pbuf_free(p);
     }
 }
 
 int wifi_init(void) {
-    if (cyw43_arch_init()) {
-        printf("Failed to initialize WiFi\n");
-        return WIFI_ERROR;
+    if (initialized) {
+        return WIFI_OK;
     }
-    
+
+    if (cyw43_arch_init()) {
+        printf("CYW43 init failed\n");
+        // Use WIFI_ETIMEDOUT for an unrecoverable hardware failure if a more specific error is not available.
+        return WIFI_ETIMEDOUT;
+    }
+
     cyw43_arch_enable_sta_mode();
-    printf("WiFi initialized\n");
+    initialized = true;
+    printf("WiFi hardware initialized\n");
     return WIFI_OK;
 }
 
 int wifi_connect(const char *ssid, const char *password) {
-    printf("Connecting to WiFi network: %s\n", ssid);
-    
-    if (cyw43_arch_wifi_connect_timeout_ms(ssid, password, CYW43_AUTH_WPA2_AES_PSK, 30000)) {
-        printf("Failed to connect to WiFi\n");
-        return WIFI_ERROR;
+    if (!initialized) { 
+        return WIFI_ENOTCONN;
     }
-    
-    printf("WiFi connected successfully\n");
-    
-    // Wait for IP assignment and link establishment
-    int retries = 30; // Increased retries
-    printf("Waiting for link establishment");
-    while (retries-- > 0) {
-        if (cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA) == CYW43_LINK_UP) {
-            printf(" - Link UP!\n");
-            break;
+
+    if (ssid == NULL || password == NULL) {
+        return WIFI_ETIMEDOUT;
+    }
+
+    // Try up to 3 times
+    for (int attempt = 1; attempt <= 3; attempt++) {
+        printf("Connection attempt %d/3 to: %s\n", attempt, ssid);
+        
+        // Deinit and restart WiFi state on retries
+        if (attempt > 1) {
+            cyw43_arch_deinit();
+            sleep_ms(1000);
+            cyw43_arch_init_with_country(CYW43_COUNTRY_USA);
+            cyw43_arch_enable_sta_mode();
+            cyw43_wifi_pm(&cyw43_state, 0xa11140);
+            sleep_ms(2000);
         }
-        printf(".");
-        sleep_ms(1000); // Wait 1 second between checks
+        
+        int result = cyw43_arch_wifi_connect_timeout_ms(
+            ssid, 
+            password, 
+            CYW43_AUTH_WPA2_AES_PSK, 
+            30000  // 30 second timeout
+        );
+
+        if (result == 0) {
+            connected = true;
+            printf("WiFi connected successfully on attempt %d\n", attempt);
+            return WIFI_OK;
+        }
+        
+        printf("Attempt %d failed (error %d)\n", attempt, result);
+        sleep_ms(2000);
     }
     
-    if (retries <= 0) {
-        printf("\nWiFi link not established within timeout\n");
-        // Don't return error - connection might still work
-        printf("Proceeding anyway - connection may still be functional\n");
-    }
-    
-    // Print IP address if available
-    extern struct netif *netif_default;
-    if (netif_default && netif_is_up(netif_default)) {
-        printf("IP address: %s\n", ip4addr_ntoa(netif_ip4_addr(netif_default)));
-    } else {
-        printf("IP address not yet assigned\n");
-    }
-    
-    return WIFI_OK;
+    printf("WiFi connection failed after 3 attempts\n");
+    return WIFI_ETIMEDOUT;
 }
 
-int wifi_disconnect(void) {
-    // Note: There's no explicit disconnect function in the current Pico SDK
-    // The connection will be cleaned up when the device resets
-    printf("WiFi disconnect requested\n");
-    return WIFI_OK;
-}
+int wifi_get_ip(char *buf, size_t len) {
+    // Treat all failures here as not connected
+    if (!initialized || !connected || buf == NULL || len == 0) {
+        return WIFI_ENOTCONN;
+    }
 
-bool wifi_is_connected(void) {
-    return cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA) == CYW43_LINK_UP;
+    struct netif *netif = netif_default;
+    if (netif == NULL) {
+        return WIFI_ENOTCONN;
+    }
+
+    snprintf(buf, len, "%s", ip4addr_ntoa(netif_ip4_addr(netif)));
+    return WIFI_OK;
 }
 
 int wifi_udp_create(uint16_t local_port) {
+    // Treat all failures here as not connected
+    if (!initialized || !connected) {
+        return WIFI_ENOTCONN;
+    }
+
+    // Close existing PCB if open
+    if (udp_pcb != NULL) {
+        udp_remove(udp_pcb);
+    }
+
     udp_pcb = udp_new();
     if (udp_pcb == NULL) {
         printf("Failed to create UDP PCB\n");
-        return WIFI_ERROR;
+        return WIFI_ENOTCONN;
     }
-    
+
+    // Binding failure (e.g., port in use) treated as not connected.
     err_t err = udp_bind(udp_pcb, IP_ADDR_ANY, local_port);
     if (err != ERR_OK) {
-        printf("Failed to bind UDP socket to port %d: %d\n", local_port, err);
+        printf("Failed to bind UDP PCB to port %d\n", local_port);
         udp_remove(udp_pcb);
         udp_pcb = NULL;
-        return WIFI_ERROR;
+        return WIFI_ENOTCONN;
     }
-    
+
+    // Set up receive callback
     udp_recv(udp_pcb, udp_recv_callback, NULL);
-    
-    printf("UDP socket created and bound to port %d\n", local_port);
+
+    printf("UDP socket created on port %d\n", local_port);
     return WIFI_OK;
 }
 
-int wifi_udp_send(const char *host, uint16_t port, const uint8_t *data, size_t len) {
-    if (udp_pcb == NULL) {
-        printf("UDP not initialized\n");
-        return WIFI_ERROR;
+int wifi_udp_send(const char *dest_ip, uint16_t dest_port, const uint8_t *data, size_t len) {
+    // Treat all failures here as not connected
+    if (!initialized || !connected || udp_pcb == NULL) {
+        return WIFI_ENOTCONN;
     }
-    
-    // Resolve hostname to IP
-    ip_addr_t server_ip;
-    err_t err = dns_gethostbyname(host, &server_ip, NULL, NULL);
-    if (err != ERR_OK) {
-        // Try to parse as IP address
-        if (!ip4addr_aton(host, ip_2_ip4(&server_ip))) {
-            printf("Failed to resolve host: %s\n", host);
-            return WIFI_ERROR;
-        }
+
+    // Treat invalid args as timeout (simplifying error codes)
+    if (dest_ip == NULL || data == NULL || dest_port == 0) {
+        return WIFI_ETIMEDOUT;
     }
-    
-    // Create pbuf and send
+
+    ip_addr_t dest_addr;
+    if (!ip4addr_aton(dest_ip, &dest_addr)) {
+        return WIFI_ETIMEDOUT;
+    }
+
+    // Try to allocate pbuf
     struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, len, PBUF_RAM);
     if (p == NULL) {
-        printf("Failed to allocate pbuf\n");
-        return WIFI_ERROR;
+        // Treat memory failure as timeout
+        return WIFI_ETIMEDOUT;
     }
-    
+
     memcpy(p->payload, data, len);
-    
-    err = udp_sendto(udp_pcb, p, &server_ip, port);
+
+    err_t err = udp_sendto(udp_pcb, p, &dest_addr, dest_port);
     pbuf_free(p);
-    
+
     if (err != ERR_OK) {
-        printf("UDP send failed: %d\n", err);
-        return WIFI_ERROR;
+        // Treat send failure (e.g., no route) as timeout
+        return WIFI_ETIMEDOUT;
     }
-    
-    return WIFI_OK;
+
+    return WIFI_OK;  // Success - return 0 instead of length
 }
 
 int wifi_udp_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_ms) {
-    if (udp_pcb == NULL) {
-        printf("UDP not initialized\n");
-        return WIFI_ERROR;
+    // Treat all failures here as not connected
+    if (!initialized || !connected || udp_pcb == NULL || buffer == NULL) {
+        return WIFI_ENOTCONN;
     }
-    
-    uint32_t start_time = to_ms_since_boot(get_absolute_time());
-    recv_ready = false;
-    
-    // Non-blocking check first
+
+    // Set up receive buffer
+    recv_buffer = buffer;
+    recv_len = max_len;
+    data_received = false;
+
     if (timeout_ms == 0) {
+        // Non-blocking mode: Poll once and return immediately
         cyw43_arch_poll();
-        if (!recv_ready) {
-            return WIFI_TIMEOUT;
+        if (!data_received) {
+            recv_buffer = NULL;
+            // Return 0 bytes received for non-blocking poll with no data
+            return 0; 
         }
     } else {
-        // Blocking with timeout
-        while (!recv_ready) {
+        // Blocking mode with timeout
+        absolute_time_t timeout_time = make_timeout_time_ms(timeout_ms);
+        
+        while (!data_received) {
+            // Process any pending packets
             cyw43_arch_poll();
-            sleep_ms(1);
             
-            uint32_t elapsed = to_ms_since_boot(get_absolute_time()) - start_time;
-            if (elapsed >= timeout_ms) {
-                return WIFI_TIMEOUT;
+            if (time_reached(timeout_time)) {
+                recv_buffer = NULL;
+                return WIFI_ETIMEDOUT; // Operation timeout
             }
+            
+            // Sleep for 1ms to yield CPU and avoid spinning too fast
+            sleep_ms(1);
         }
     }
+
+    int bytes_received = recv_len;
+    recv_buffer = NULL;
+    data_received = false;
     
-    if (recv_len > max_len) {
-        printf("Received data too large (%zu > %zu)\n", recv_len, max_len);
-        recv_ready = false;
-        return WIFI_ERROR;
+    return bytes_received;
+}
+
+int wifi_reset(void) {
+    if (udp_pcb != NULL) {
+        udp_remove(udp_pcb);
+        udp_pcb = NULL;
+    }
+
+    connected = false;
+
+    if (initialized) {
+        cyw43_arch_deinit();
+        initialized = false;
+    }
+
+    // Re-initialize
+    return wifi_init();
+}
+
+bool wifi_is_connected(void) {
+    return connected && initialized;
+}
+
+int wifi_get_rssi(void) {
+    // Treat all failures here as not connected
+    if (!initialized || !connected) {
+        return WIFI_ENOTCONN;
+    }
+
+    int32_t rssi;
+    // cyw43_wifi_get_rssi returns 0 on success. Treat failure as not connected.
+    if (cyw43_wifi_get_rssi(&cyw43_state, &rssi) == 0) {
+        return rssi;
     }
     
-    memcpy(buffer, recv_buffer, recv_len);
-    size_t len = recv_len;
-    recv_ready = false;
-    
-    return (int)len;
+    return WIFI_ENOTCONN;
 }

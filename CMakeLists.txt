@@ -71,3 +71,11 @@ target_link_libraries(wifi_project
 )
 
 pico_add_extra_outputs(wifi_project)
+
+# Copy UF2 file to Windows accessible location after build
+add_custom_command(TARGET wifi_project POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy
+        ${CMAKE_CURRENT_BINARY_DIR}/wifi_project.uf2
+        /home/jeral/MQTT/2004-MQTT/wifi_project.uf2
+    COMMENT "Copying wifi_project.uf2 to project root directory"
+)

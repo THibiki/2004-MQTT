@@ -6,6 +6,7 @@
 #include <stddef.h>
 
 // SD card function prototypes
+void sd_card_deinit(void);
 int sd_card_init(void);
 int sd_card_init_with_detection(void);
 int sd_card_simple_detect(void);

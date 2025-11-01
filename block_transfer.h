@@ -30,6 +30,9 @@ typedef struct {
 // Block transfer functions
 int block_transfer_init(void);
 int send_block_transfer(const char *topic, const uint8_t *data, size_t data_len);
+int send_block_transfer_qos(const char *topic, const uint8_t *data, size_t data_len, uint8_t qos);
+int send_image_file(const char *topic, const char *filename);
+int send_image_file_qos(const char *topic, const char *filename, uint8_t qos);
 void process_block_chunk(const uint8_t *data, size_t len);
 void generate_large_message(char *buffer, size_t size);
 bool block_transfer_is_active(void);

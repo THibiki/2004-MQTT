@@ -77,24 +77,166 @@ int send_block_transfer(const char *topic, const uint8_t *data, size_t data_len)
         
         printf("Sending chunk %d/%d (%zu bytes)\n", part, total_parts, packet_size);
         
-        // Send chunk
-        int ret = mqttsn_publish(topic, packet, packet_size, 0);
+        // Send with QoS 1 - will wait for PUBACK, retry if timeout
+        int max_retries = 3;
+        int ret = MQTTSN_ERROR;
+        
+        for (int attempt = 1; attempt <= max_retries; attempt++) {
+            ret = mqttsn_publish(topic, packet, packet_size, 1); // QoS 1
+            
+            if (ret == MQTTSN_OK) {
+                break; // Success - PUBACK received
+            } else if (attempt < max_retries) {
+                printf("  Retry %d/%d for chunk %d (no PUBACK)\n", attempt, max_retries, part);
+                sleep_ms(100); // Small delay before retry
+            }
+        }
+        
         if (ret != MQTTSN_OK) {
-            printf("Failed to send chunk %d/%d\n", part, total_parts);
+            printf("Failed to send chunk %d/%d after %d attempts\n", part, total_parts, max_retries);
             return -1;
         }
         
-        // Delay between chunks to avoid overwhelming the network
         // Print progress every 10 chunks
         if (part % 10 == 0 || part == total_parts) {
             printf("  Progress: %d/%d chunks sent (%.1f%%)\n", 
                    part, total_parts, (float)part * 100.0 / total_parts);
         }
-        sleep_ms(200);  // 200ms delay between chunks
+        
+        // Small delay between chunks
+        sleep_ms(20);
     }
     
     printf("Block transfer completed: %d chunks sent\n", total_parts);
     return 0;
+}
+
+// Send a large message using block transfer with configurable QoS
+int send_block_transfer_qos(const char *topic, const uint8_t *data, size_t data_len, uint8_t qos) {
+    if (data_len > BLOCK_BUFFER_SIZE) {
+        printf("Error: Message too large (%zu bytes, max %d)\n", data_len, BLOCK_BUFFER_SIZE);
+        return -1;
+    }
+    
+    // Calculate number of chunks needed
+    size_t chunk_data_size = BLOCK_CHUNK_SIZE - sizeof(block_header_t);
+    uint16_t total_parts = (data_len + chunk_data_size - 1) / chunk_data_size;
+    
+    if (total_parts > BLOCK_MAX_CHUNKS) {
+        printf("Error: Too many chunks needed (%d, max %d)\n", total_parts, BLOCK_MAX_CHUNKS);
+        return -1;
+    }
+    
+    uint16_t block_id = next_block_id++;
+    printf("\n=== Starting block transfer (QoS %d) ===\n", qos);
+    printf("Block ID: %d, Data size: %zu bytes, Chunks: %d\n", block_id, data_len, total_parts);
+    
+    // Send each chunk
+    for (uint16_t part = 1; part <= total_parts; part++) {
+        size_t offset = (part - 1) * chunk_data_size;
+        size_t chunk_len = (offset + chunk_data_size > data_len) ? 
+                          (data_len - offset) : chunk_data_size;
+        
+        // Create packet with header + data
+        uint8_t packet[BLOCK_CHUNK_SIZE];
+        block_header_t *header = (block_header_t*)packet;
+        
+        header->block_id = block_id;
+        header->part_num = part;
+        header->total_parts = total_parts;
+        header->data_len = chunk_len;
+        
+        // Copy chunk data after header
+        memcpy(packet + sizeof(block_header_t), data + offset, chunk_len);
+        
+        size_t packet_size = sizeof(block_header_t) + chunk_len;
+        
+        printf("Sending chunk %d/%d (%zu bytes)\n", part, total_parts, packet_size);
+        
+        int ret;
+        if (qos == 1) {
+            // QoS 1 - will wait for PUBACK, retry if timeout
+            int max_retries = 3;
+            ret = MQTTSN_ERROR;
+            
+            for (int attempt = 1; attempt <= max_retries; attempt++) {
+                ret = mqttsn_publish(topic, packet, packet_size, 1);
+                
+                if (ret == MQTTSN_OK) {
+                    break; // Success - PUBACK received
+                } else if (attempt < max_retries) {
+                    printf("  Retry %d/%d for chunk %d (no PUBACK)\n", attempt, max_retries, part);
+                    sleep_ms(100); // Small delay before retry
+                }
+            }
+            
+            if (ret != MQTTSN_OK) {
+                printf("Failed to send chunk %d/%d after %d attempts\n", part, total_parts, max_retries);
+                return -1;
+            }
+        } else {
+            // QoS 0 - fire and forget
+            ret = mqttsn_publish(topic, packet, packet_size, 0);
+            if (ret != MQTTSN_OK) {
+                printf("Failed to send chunk %d/%d\n", part, total_parts);
+                return -1;
+            }
+        }
+        
+        // Print progress every 10 chunks
+        if (part % 10 == 0 || part == total_parts) {
+            printf("  Progress: %d/%d chunks sent (%.1f%%)\n", 
+                   part, total_parts, (float)part * 100.0 / total_parts);
+        }
+        
+        // Small delay between chunks
+        sleep_ms(20);
+    }
+    
+    printf("Block transfer completed: %d chunks sent\n", total_parts);
+    return 0;
+}
+
+// Send an image file from SD card using block transfer
+int send_image_file(const char *topic, const char *filename) {
+    return send_image_file_qos(topic, filename, 1);  // Default QoS 1
+}
+
+// Send an image file from SD card using block transfer with configurable QoS
+int send_image_file_qos(const char *topic, const char *filename, uint8_t qos) {
+    printf("\n=== Starting image file transfer (QoS %d) ===\n", qos);
+    printf("File: %s\n", filename);
+    
+    // Read image file from SD card
+    uint8_t *image_buffer = malloc(BLOCK_BUFFER_SIZE);
+    if (!image_buffer) {
+        printf("Error: Failed to allocate image buffer\n");
+        return -1;
+    }
+    
+    size_t image_size = 0;
+    int ret = sd_card_read_file(filename, image_buffer, BLOCK_BUFFER_SIZE, &image_size);
+    
+    if (ret != 0) {
+        printf("Error: Failed to read image file '%s'\n", filename);
+        free(image_buffer);
+        return -1;
+    }
+    
+    printf("Image loaded: %zu bytes\n", image_size);
+    
+    // Send via block transfer with specified QoS
+    ret = send_block_transfer_qos(topic, image_buffer, image_size, qos);
+    
+    free(image_buffer);
+    
+    if (ret == 0) {
+        printf("Image transfer completed successfully\n");
+    } else {
+        printf("Image transfer failed\n");
+    }
+    
+    return ret;
 }
 
 // Initialize block reassembly

@@ -70,20 +70,40 @@ static uint8_t sd_command(uint8_t cmd, uint32_t arg, uint8_t crc) {
     return resp;
 }
 
+// Deinitialize SD card hardware completely
+void sd_card_deinit(void) {
+    sd_cs_deselect();
+    spi_deinit(SD_SPI);
+    sd_detected = false;
+    sd_initialized = false;
+    fat32_mounted = false;
+}
+
+// Track if we've already shown the init message to avoid spam
+static bool init_msg_shown = false;
+
 // Initialize SD card hardware
 int sd_card_init(void) {
-    printf("Initializing real SD card hardware...\n");
-    printf("Using pins: MISO=%d, MOSI=%d, SCK=%d, CS=%d\n", SD_MISO, SD_MOSI, SD_SCK, SD_CS);
+    // Only show detailed initialization message once per session
+    if (!init_msg_shown) {
+        printf("Initializing SD card hardware (MISO=%d, MOSI=%d, SCK=%d, CS=%d)...\n", 
+               SD_MISO, SD_MOSI, SD_SCK, SD_CS);
+        init_msg_shown = true;
+    }
     
     // Reset static variables
     sd_detected = false;
     sd_initialized = false;
     is_sdhc = false;
     file_count = 0;
+    fat32_mounted = false;
+    
+    // Fully deinitialize first to clear any stale state
+    spi_deinit(SD_SPI);
+    sleep_ms(100);
     
     // Initialize SPI at low speed for SD card initialization
     spi_init(SD_SPI, 400000); // 400kHz
-    printf("SPI initialized at 400kHz\n");
     
     // Configure GPIO pins
     gpio_set_function(SD_MISO, GPIO_FUNC_SPI);
@@ -94,33 +114,26 @@ int sd_card_init(void) {
     gpio_init(SD_CS);
     gpio_set_dir(SD_CS, GPIO_OUT);
     sd_cs_deselect();
-    printf("GPIO pins configured\n");
     
     // Wait for power to stabilize
     sleep_ms(100);
     
     // Send at least 74 clock pulses with CS high (SD spec)
-    printf("Sending wake-up clocks...\n");
     uint8_t dummy = 0xFF;
     for (int i = 0; i < 20; i++) {
         spi_write_blocking(SD_SPI, &dummy, 1);
     }
     
     // Send CMD0 - Reset to idle state
-    printf("Sending CMD0 (reset)...\n");
     uint8_t resp = sd_command(CMD0, 0, 0x95);
     sd_cs_deselect();
     spi_write_blocking(SD_SPI, &dummy, 1);
     
-    printf("CMD0 response: 0x%02X (expected: 0x01)\n", resp);
-    
     if (resp != 0x01) {
         if (resp == 0xFF) {
-            printf("❌ No response from SD card (check connections)\n");
+            printf("  ✗ No SD card detected\n");
+            return -1;
         } else if (resp == 0x3F) {
-            printf("❌ Invalid response - possible SPI timing issue\n");
-            printf("Trying slower SPI speed...\n");
-            
             // Try even slower SPI
             spi_set_baudrate(SD_SPI, 100000); // 100kHz
             sleep_ms(100);
@@ -129,27 +142,23 @@ int sd_card_init(void) {
             resp = sd_command(CMD0, 0, 0x95);
             sd_cs_deselect();
             spi_write_blocking(SD_SPI, &dummy, 1);
-            printf("CMD0 at 100kHz: 0x%02X\n", resp);
             
             if (resp != 0x01) {
-                printf("❌ Still failed at slower speed\n");
+                printf("  ✗ SD card communication failed\n");
                 return -1;
-            } else {
-                printf("✅ Success at 100kHz - continuing with slow speed\n");
             }
+        } else if (resp == 0x00) {
+            // 0x00 means no card inserted
+            return -1;
         } else {
-            printf("❌ Unexpected response: 0x%02X\n", resp);
-        }
-        
-        if (resp != 0x01) {
+            printf("  ✗ Unexpected SD card response: 0x%02X\n", resp);
             return -1;
         }
     }
-    printf("SD card in idle state\n");
+    
     sd_detected = true;
     
     // CMD8 - Test voltage and SDHC support
-    printf("Sending CMD8 (interface condition)...\n");
     resp = sd_command(CMD8, 0x1AA, 0x87);
     uint8_t r7[4];
     for (int i = 0; i < 4; i++) {
@@ -159,15 +168,12 @@ int sd_card_init(void) {
     spi_write_blocking(SD_SPI, &dummy, 1);
     
     if (resp == 0x01 && r7[2] == 0x01 && r7[3] == 0xAA) {
-        printf("CMD8 OK (SDHC/SDXC card detected)\n");
         is_sdhc = true;
     } else {
-        printf("CMD8 failed, treating as SDSC card\n");
         is_sdhc = false;
     }
     
     // ACMD41 loop - Initialize card
-    printf("Initializing card with ACMD41...\n");
     for (int i = 0; i < 100; i++) {
         // CMD55 prefix for application command
         sd_command(CMD55, 0, 0xFF);
@@ -180,14 +186,13 @@ int sd_card_init(void) {
         spi_write_blocking(SD_SPI, &dummy, 1);
         
         if (resp == 0x00) {
-            printf("Card initialized successfully (ACMD41 done after %d attempts)\n", i + 1);
             sd_initialized = true;
             return 0;
         }
         sleep_ms(10);
     }
     
-    printf("ACMD41 timeout - initialization failed\n");
+    printf("  ✗ SD card initialization timeout\n");
     return -1;
 }
 
@@ -368,7 +373,7 @@ int sd_card_read_sector(uint32_t sector, uint8_t *buffer) {
     }
     
     if (token != 0xFE) {
-        printf("Read timeout - no data token (got 0x%02X)\n", token);
+        // Read timeout - likely no SD card (silent failure)
         sd_cs_deselect();
         return -1;
     }
@@ -383,7 +388,6 @@ int sd_card_read_sector(uint32_t sector, uint8_t *buffer) {
     sd_cs_deselect();
     spi_write_blocking(SD_SPI, &dummy, 1);
     
-    printf("Read sector %lu successfully\n", sector);
     return 0;
 }
 

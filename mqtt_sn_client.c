@@ -21,6 +21,21 @@
 #define MQTTSN_FLAG_QOS_1         0x20
 #define MQTTSN_FLAG_QOS_2         0x40
 
+// Packet queue for incoming messages
+#define PACKET_QUEUE_SIZE 16
+#define MAX_PACKET_SIZE 256
+
+typedef struct {
+    uint8_t data[MAX_PACKET_SIZE];
+    size_t length;
+    bool used;
+} queued_packet_t;
+
+static queued_packet_t packet_queue[PACKET_QUEUE_SIZE];
+static volatile int queue_write_idx = 0;
+static volatile int queue_read_idx = 0;
+static volatile int queue_count = 0;
+
 // Connection state
 static bool connected = false;
 static char gateway_host[64];
@@ -28,14 +43,160 @@ static uint16_t gateway_port;
 static uint16_t msg_id = 1;
 static mqttsn_message_callback_t message_callback = NULL;
 
-// Helper function to send MQTT-SN packet
-static int send_packet(const uint8_t *packet, size_t len) {
-    return wifi_udp_send(gateway_host, gateway_port, packet, len);
+// Queue management functions
+static void queue_init(void) {
+    for (int i = 0; i < PACKET_QUEUE_SIZE; i++) {
+        packet_queue[i].used = false;
+        packet_queue[i].length = 0;
+    }
+    queue_write_idx = 0;
+    queue_read_idx = 0;
+    queue_count = 0;
 }
 
-// Helper function to receive MQTT-SN packet
+static bool queue_push(const uint8_t *data, size_t len) {
+    if (queue_count >= PACKET_QUEUE_SIZE || len > MAX_PACKET_SIZE) {
+        return false; // Queue full or packet too large
+    }
+    
+    memcpy(packet_queue[queue_write_idx].data, data, len);
+    packet_queue[queue_write_idx].length = len;
+    packet_queue[queue_write_idx].used = true;
+    
+    queue_write_idx = (queue_write_idx + 1) % PACKET_QUEUE_SIZE;
+    queue_count++;
+    
+    return true;
+}
+
+static bool queue_pop(uint8_t *buffer, size_t max_len, size_t *out_len) {
+    if (queue_count == 0) {
+        return false; // Queue empty
+    }
+    
+    if (packet_queue[queue_read_idx].length > max_len) {
+        return false; // Buffer too small
+    }
+    
+    memcpy(buffer, packet_queue[queue_read_idx].data, packet_queue[queue_read_idx].length);
+    *out_len = packet_queue[queue_read_idx].length;
+    packet_queue[queue_read_idx].used = false;
+    
+    queue_read_idx = (queue_read_idx + 1) % PACKET_QUEUE_SIZE;
+    queue_count--;
+    
+    return true;
+}
+
+// Helper function to send MQTT-SN packet
+static int send_packet(const uint8_t *data, size_t len) {
+    return wifi_udp_send(gateway_host, gateway_port, data, len);
+}
+
+// Helper function to receive MQTT-SN packet with queue support
 static int receive_packet(uint8_t *buffer, size_t max_len, uint32_t timeout_ms) {
-    return wifi_udp_receive(buffer, max_len, timeout_ms);
+    // First check if there's a queued packet
+    size_t queued_len;
+    if (queue_pop(buffer, max_len, &queued_len)) {
+        return queued_len;
+    }
+    
+    // No queued packet - poll the network
+    uint8_t temp_buffer[MAX_PACKET_SIZE];
+    uint32_t start_time = to_ms_since_boot(get_absolute_time());
+    
+    while (true) {
+        int len = wifi_udp_receive(temp_buffer, sizeof(temp_buffer), 0); // Non-blocking
+        
+        if (len > 0) {
+            // Got a packet - return it directly if it fits
+            if (len <= max_len) {
+                memcpy(buffer, temp_buffer, len);
+                return len;
+            } else {
+                return -1; // Buffer too small
+            }
+        }
+        
+        // Check timeout
+        if (timeout_ms > 0) {
+            uint32_t elapsed = to_ms_since_boot(get_absolute_time()) - start_time;
+            if (elapsed >= timeout_ms) {
+                return WIFI_ETIMEDOUT; // Timeout
+            }
+        } else {
+            return 0; // Non-blocking mode, no data available
+        }
+        
+        // Small delay to avoid busy-waiting
+        sleep_ms(10);
+    }
+}
+
+// Background packet receiver - should be called periodically to fill queue
+static void receive_background_packets(void) {
+    uint8_t temp_buffer[MAX_PACKET_SIZE];
+    
+    // Non-blocking poll for packets
+    int len = wifi_udp_receive(temp_buffer, sizeof(temp_buffer), 0);
+    
+    if (len > 0 && len <= MAX_PACKET_SIZE) {
+        // Queue the packet for later processing
+        if (!queue_push(temp_buffer, len)) {
+            printf("Warning: Packet queue full, dropping packet\n");
+        }
+    }
+}
+
+// Wait for a specific message type, optionally matching message ID
+static int wait_for_message(uint8_t expected_type, uint16_t expected_msg_id, bool match_msg_id,
+                           uint8_t *buffer, size_t max_len, uint32_t timeout_ms) {
+    uint32_t start_time = to_ms_since_boot(get_absolute_time());
+    uint8_t temp_buffer[MAX_PACKET_SIZE];
+    
+    while (true) {
+        // Receive any packet (from queue or network)
+        int len = receive_packet(temp_buffer, sizeof(temp_buffer), 100);
+        
+        if (len > 2) {
+            uint8_t msg_type = temp_buffer[1];
+            
+            // Check if this is the message we're waiting for
+            if (msg_type == expected_type) {
+                bool msg_id_matches = true;
+                
+                if (match_msg_id && expected_type == MQTTSN_PUBACK && len >= 7) {
+                    // PUBACK: msg_id at bytes [4:5]
+                    uint16_t msg_id = (temp_buffer[4] << 8) | temp_buffer[5];
+                    msg_id_matches = (msg_id == expected_msg_id);
+                }
+                
+                if (msg_id_matches) {
+                    // Found the message we're waiting for
+                    if (len <= max_len) {
+                        memcpy(buffer, temp_buffer, len);
+                        return len;
+                    } else {
+                        return -1; // Buffer too small
+                    }
+                }
+            } else {
+                // Not the message we want - re-queue it for later
+                if (!queue_push(temp_buffer, len)) {
+                    printf("Warning: Can't re-queue packet, queue full\n");
+                }
+            }
+        }
+        
+        // Check timeout
+        uint32_t elapsed = to_ms_since_boot(get_absolute_time()) - start_time;
+        if (elapsed >= timeout_ms) {
+            return WIFI_ETIMEDOUT;
+        }
+        
+        // Small delay
+        sleep_ms(10);
+    }
 }
 
 int mqttsn_init(const char *gateway_host_param, uint16_t gateway_port_param) {
@@ -43,6 +204,9 @@ int mqttsn_init(const char *gateway_host_param, uint16_t gateway_port_param) {
     gateway_host[sizeof(gateway_host) - 1] = '\0';
     gateway_port = gateway_port_param;
     connected = false;
+    
+    // Initialize packet queue
+    queue_init();
     
     printf("MQTT-SN initialized - Gateway: %s:%d\n", gateway_host, gateway_port);
     return MQTTSN_OK;
@@ -99,9 +263,9 @@ int mqttsn_connect(const char *client_id, uint16_t keep_alive) {
     
     printf("CONNECT packet sent, waiting for CONNACK (5s timeout)...\n");
     
-    // Wait for CONNACK
+    // Wait specifically for CONNACK message
     uint8_t response[32];
-    int len = receive_packet(response, sizeof(response), 5000);
+    int len = wait_for_message(MQTTSN_CONNACK, 0, false, response, sizeof(response), 5000);
     
     printf("Received response: %d bytes\n", len);
     if (len > 0) {
@@ -113,12 +277,7 @@ int mqttsn_connect(const char *client_id, uint16_t keep_alive) {
     }
     
     if (len < 3) {
-        printf("❌ Response too short (expected >=3 bytes, got %d)\n", len);
-        return MQTTSN_TIMEOUT;
-    }
-    
-    if (response[1] != MQTTSN_CONNACK) {
-        printf("❌ Not a CONNACK (expected 0x05, got 0x%02X)\n", response[1]);
+        printf("❌ Response too short or timeout (got %d)\n", len);
         return MQTTSN_TIMEOUT;
     }
     
@@ -226,7 +385,9 @@ int mqttsn_publish(const char *topic, const uint8_t *data, size_t len, mqttsn_qo
     pos += topic_len;
     
     // Message ID (for QoS > 0)
+    uint16_t current_msg_id = 0;
     if (qos > QOS_0) {
+        current_msg_id = msg_id;
         packet[pos++] = (msg_id >> 8) & 0xFF;
         packet[pos++] = msg_id & 0xFF;
         msg_id++;
@@ -245,7 +406,25 @@ int mqttsn_publish(const char *topic, const uint8_t *data, size_t len, mqttsn_qo
     packet[0] = pos;
     
     // Send PUBLISH
-    return send_packet(packet, pos) == WIFI_OK ? MQTTSN_OK : MQTTSN_ERROR;
+    if (send_packet(packet, pos) != WIFI_OK) {
+        return MQTTSN_ERROR;
+    }
+    
+    // For QoS 1, wait for PUBACK
+    if (qos == QOS_1) {
+        uint8_t ack_buffer[16];
+        int ack_len = wait_for_message(MQTTSN_PUBACK, current_msg_id, true, ack_buffer, sizeof(ack_buffer), 1000);
+        
+        if (ack_len < 0) {
+            // Timeout or error
+            return MQTTSN_ERROR;
+        }
+        
+        // PUBACK received successfully
+        return MQTTSN_OK;
+    }
+    
+    return MQTTSN_OK;
 }
 
 int mqttsn_poll(void) {
