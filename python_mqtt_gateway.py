@@ -6,7 +6,7 @@ import time
 import paho.mqtt.client as mqtt
 
 class MQTTSNGateway:
-    def __init__(self, udp_port=1884, mqtt_host='localhost', mqtt_port=1883):
+    def __init__(self, udp_port=5000, mqtt_host='localhost', mqtt_port=1883):
         self.udp_port = udp_port
         self.mqtt_host = mqtt_host
         self.mqtt_port = mqtt_port
@@ -22,7 +22,7 @@ class MQTTSNGateway:
         print("=" * 50)
         
         # Initialize MQTT client
-        self.mqtt_client = mqtt.Client()
+        self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
         self.mqtt_client.on_connect = self.on_mqtt_connect
         self.mqtt_client.on_message = self.on_mqtt_message
         
@@ -36,6 +36,7 @@ class MQTTSNGateway:
         
         # Initialize UDP socket
         self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.udp_socket.bind(('0.0.0.0', self.udp_port))
         print(f"✅ Listening on UDP port {self.udp_port}")
         
@@ -50,6 +51,7 @@ class MQTTSNGateway:
     
     def handle_mqttsn_packet(self, data, addr):
         if len(data) < 2:
+            print(f"⚠️  Received packet from {addr} but too short ({len(data)} bytes)")
             return
             
         length = data[0]
@@ -128,20 +130,45 @@ class MQTTSNGateway:
 
 if __name__ == "__main__":
     import sys
+    import platform
     
     print("Python MQTT-SN Gateway")
     print("=" * 30)
     
-    # Check if mosquitto is running
+    # Check if mosquitto is running (Windows/Linux compatible)
     import subprocess
-    try:
-        result = subprocess.run(['systemctl', 'is-active', 'mosquitto'], 
-                              capture_output=True, text=True)
-        if result.stdout.strip() != 'active':
-            print("Starting mosquitto MQTT broker...")
-            subprocess.run(['sudo', 'systemctl', 'start', 'mosquitto'])
-    except:
-        print("Note: Make sure mosquitto MQTT broker is running")
+    mosquitto_running = False
     
+    if platform.system() == "Windows":
+        # Windows: Check if mosquitto service is running
+        try:
+            result = subprocess.run(['sc', 'query', 'Mosquitto Broker'], 
+                                  capture_output=True, text=True)
+            if 'RUNNING' in result.stdout:
+                mosquitto_running = True
+                print("✅ Mosquitto broker service is running")
+            else:
+                print("⚠ Mosquitto broker service is not running")
+                print("   Start it with: sc start 'Mosquitto Broker'")
+                print("   Or install Mosquitto if not installed")
+        except:
+            print("⚠ Could not check Mosquitto status")
+            print("   Note: Make sure mosquitto MQTT broker is running")
+    else:
+        # Linux/WSL: Use systemctl
+        try:
+            result = subprocess.run(['systemctl', 'is-active', 'mosquitto'], 
+                                  capture_output=True, text=True)
+            if result.stdout.strip() == 'active':
+                mosquitto_running = True
+                print("✅ Mosquitto broker is running")
+            else:
+                print("⚠ Mosquitto broker is not running")
+                print("   Starting mosquitto MQTT broker...")
+                subprocess.run(['sudo', 'systemctl', 'start', 'mosquitto'], check=False)
+        except:
+            print("Note: Make sure mosquitto MQTT broker is running")
+    
+    print("")
     gateway = MQTTSNGateway()
     gateway.start()

@@ -1,6 +1,7 @@
 #include "mqtt_sn_client.h"
 #include "wifi_driver.h"
 #include "block_transfer.h"
+#include "pico/cyw43_arch.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -97,11 +98,19 @@ int mqttsn_connect(const char *client_id, uint16_t keep_alive) {
         return MQTTSN_ERROR;
     }
     
-    printf("CONNECT packet sent, waiting for CONNACK (5s timeout)...\n");
+    printf("✅ CONNECT packet sent to %s:%d\n", gateway_host, gateway_port);
+    printf("Waiting for CONNACK response...\n");
     
-    // Wait for CONNACK
+    // Wait for CONNACK - poll multiple times
     uint8_t response[32];
-    int len = receive_packet(response, sizeof(response), 5000);
+    int len = -1;
+    
+    // Try receiving with multiple short timeouts to allow WiFi polling
+    for (int attempt = 0; attempt < 50; attempt++) {
+        len = receive_packet(response, sizeof(response), 100);  // 100ms timeout per attempt
+        if (len > 0) break;
+        cyw43_arch_poll();  // Poll WiFi stack
+    }
     
     printf("Received response: %d bytes\n", len);
     if (len > 0) {

@@ -29,7 +29,7 @@ fi
 echo "✅ Starting MQTT broker..."
 sudo systemctl start mosquitto
 
-echo "✅ Starting MQTT-SN Gateway on UDP port 1884..."
+echo "✅ Starting MQTT-SN Gateway on UDP port 5000..."
 echo "   Forwarding to MQTT broker on localhost:1883"
 echo ""
 echo "Press Ctrl+C to stop"

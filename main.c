@@ -36,8 +36,8 @@ int main() {
         return -1;
     }
     
-    const char *ssid = "jer";
-    const char *password = "jeraldgoh";
+    const char *ssid = "xuan";
+    const char *password = "xuan1234";
     ret = wifi_connect(ssid, password);
     if (ret != WIFI_OK) {
         printf("  ✗ WiFi connect failed: %d\n", ret);
@@ -47,7 +47,7 @@ int main() {
     printf("  ✓ WiFi connected!\n");
     printf("    SSID: %s\n", ssid);
     printf("    IP: 172.20.10.2\n");
-    printf("    Gateway: 172.20.10.14:1884\n\n");
+    printf("    Gateway: 172.20.10.1:5000\n\n");
     sleep_ms(2000);  // Delay for visibility
     
     // ═══════════════════════════════════════════════════════
@@ -68,7 +68,7 @@ int main() {
                 "Boot time: %lu ms\n"
                 "Network: jer\n"
                 "IP: 172.20.10.2\n"
-                "Gateway: 172.20.10.14:1884\n"
+                "Gateway: 172.20.10.1:5000\n"
                 "Status: Ready\n",
                 boot_time);
             
@@ -108,7 +108,7 @@ int main() {
     // Send test UDP message and measure RTT
     const char *echo_msg = "PING";
     uint32_t echo_start = to_ms_since_boot(get_absolute_time());
-    ret = wifi_udp_send("172.20.10.14", 1884, (uint8_t*)echo_msg, strlen(echo_msg));
+    ret = wifi_udp_send("172.20.10.2", 5000, (uint8_t*)echo_msg, strlen(echo_msg));
     if (ret == WIFI_OK) {
         // Wait for any UDP response (up to 1 second)
         for (int i = 0; i < 100; i++) {
@@ -131,8 +131,8 @@ int main() {
     // ═══════════════════════════════════════════════════════
     printf("→ Connecting to MQTT-SN gateway...\n");
     
-    const char *gateway_ip = "172.20.10.14";
-    uint16_t gateway_port = 1884;
+    const char *gateway_ip = "172.20.10.2";
+    uint16_t gateway_port = 5000;
     
     if (mqttsn_init(gateway_ip, gateway_port) != MQTTSN_OK) {
         printf("  ✗ MQTT-SN init failed\n");

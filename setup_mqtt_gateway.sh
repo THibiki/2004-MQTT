@@ -60,7 +60,7 @@ GatewayName=LinuxGW
 KeepAlive=900
 
 # UDP Port for MQTT-SN
-Port=1884
+Port=5000
 
 # MQTT Broker connection
 BrokerName=localhost
@@ -88,4 +88,4 @@ echo "To start the MQTT-SN Gateway, run:"
 echo "cd /tmp/paho.mqtt-sn.embedded-c-master/MQTTSNGateway"
 echo "./MQTT-SNGateway gateway.conf"
 echo ""
-echo "The gateway will listen on UDP port 1884 and forward to MQTT broker on port 1883"
+echo "The gateway will listen on UDP port 5000 and forward to MQTT broker on port 1883"
