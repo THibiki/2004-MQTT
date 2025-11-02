@@ -23,7 +23,7 @@ static bool wifi_initialized = false;
 static bool mqtt_connected = false;
 static bool sd_card_mounted = false;
 static uint8_t current_qos = 0;  // Start with QoS 0
-static uint8_t qos_mode = 0;     // 0=QoS0, 1=QoS1, 2=Stopped
+static uint8_t qos_mode = 2;     // 0=QoS0, 1=QoS1, 2=Stopped (start in Stopped mode)
 static uint32_t last_button_press[3] = {0};
 static uint32_t last_sd_check = 0;
 #define SD_CHECK_INTERVAL_MS 1000  // Check SD card every second
@@ -73,14 +73,16 @@ void on_message_received(const char *topic, const uint8_t *data, size_t len) {
         // Echo back with "ACK: " prefix
         char response[128];
         snprintf(response, sizeof(response), "ACK: %.*s", (int)len, data);
-        mqttsn_publish("pico/response", (uint8_t*)response, strlen(response), current_qos);
+        // Always use QoS 0 for responses to avoid blocking in callback
+        mqttsn_publish("pico/response", (uint8_t*)response, strlen(response), 0);
         printf("  → Sent acknowledgment to pico/response\n\n");
     }
     else if (strcmp(topic, "pico/command") == 0) {
         // Handle commands (you can add custom commands here)
         if (len == 4 && memcmp(data, "ping", 4) == 0) {
             const char *pong = "pong";
-            mqttsn_publish("pico/response", (uint8_t*)pong, 4, current_qos);
+            // Always use QoS 0 for responses to avoid blocking in callback
+            mqttsn_publish("pico/response", (uint8_t*)pong, 4, 0);
             printf("  → Responded with 'pong'\n\n");
         }
     }
@@ -611,6 +613,17 @@ int main() {
             }
             
             sequence_number++;
+            last_publish = now;
+        }
+        
+        // ═══════════════════════════════════════════════════════
+        // Heartbeat in Stopped/QoS1 mode to keep gateway address updated
+        // ═══════════════════════════════════════════════════════
+        if (mqtt_connected && qos_mode != 0 && (now - last_publish > 10000)) {
+            // Send a lightweight keepalive every 10 seconds in non-QoS0 modes
+            // This ensures gateway knows our current UDP port for incoming messages
+            const char *keepalive = "alive";
+            mqttsn_publish("pico/keepalive", (uint8_t*)keepalive, 5, 0);
             last_publish = now;
         }
         

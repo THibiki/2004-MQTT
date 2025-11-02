@@ -3,7 +3,11 @@
 import socket
 import threading
 import time
+import sys
 import paho.mqtt.client as mqtt
+
+# Force unbuffered output
+sys.stdout = sys.stderr
 
 class MQTTSNGateway:
     def __init__(self, udp_port=1884, mqtt_host='localhost', mqtt_port=1883):
@@ -111,17 +115,37 @@ class MQTTSNGateway:
         pos = 3
         
         if topic_type == 0x00:  # Topic name (string)
-            # Find end of topic name (null-terminated or until payload)
-            # Topic name ends when we hit non-printable ASCII or specific delimiters
-            topic_end = pos
-            while topic_end < len(data) and data[topic_end] >= 0x20 and data[topic_end] <= 0x7E:
-                # Check if this might be start of block header (0x00 bytes)
-                if topic_end < len(data) - 1 and data[topic_end:topic_end+2] == b'\x00\x00':
-                    break
-                topic_end += 1
+            # Topic name must be followed by payload
+            # The Pico sends: [Length][MsgType][Flags][Topic][Payload]
+            # Topic contains only letters, numbers, and '/' character
+            # Payload starts after the topic
             
-            topic = data[pos:topic_end].decode('ascii', errors='ignore')
-            pos = topic_end
+            # Find where topic name ends (first non-topic character or known topic match)
+            known_topics = [b'pico/data', b'pico/test', b'pico/command', b'pico/response', b'pico/chunks', b'pico/block']
+            topic_bytes = None
+            
+            # Try to match known topics first
+            for known_topic in known_topics:
+                if data[pos:pos+len(known_topic)] == known_topic:
+                    topic_bytes = known_topic
+                    pos += len(known_topic)
+                    break
+            
+            # If no known topic matched, find topic end (stops at non-alphanumeric or non-slash)
+            if not topic_bytes:
+                topic_end = pos
+                while topic_end < len(data):
+                    c = data[topic_end]
+                    if not ((c >= ord('a') and c <= ord('z')) or 
+                           (c >= ord('A') and c <= ord('Z')) or
+                           (c >= ord('0') and c <= ord('9')) or
+                           c == ord('/') or c == ord('_')):
+                        break
+                    topic_end += 1
+                topic_bytes = data[pos:topic_end]
+                pos = topic_end
+            
+            topic = topic_bytes.decode('ascii', errors='ignore')
             
             # Skip message ID if QoS > 0 (2 bytes)
             qos = (flags >> 5) & 0x03
@@ -148,10 +172,10 @@ class MQTTSNGateway:
         
         print(f"📤 PUBLISH from {addr}: topic='{topic}', msgid={msg_id}, payload={len(payload)} bytes, QoS={qos}")
         
-        # Forward to MQTT broker
+        # Forward to MQTT broker with same QoS level
         try:
-            self.mqtt_client.publish(topic, payload)
-            print(f"   ✅ Forwarded to MQTT broker")
+            self.mqtt_client.publish(topic, payload, qos=qos)
+            print(f"   ✅ Forwarded to MQTT broker with QoS={qos}")
             
             # Send PUBACK for QoS 1 messages
             if qos == 1 and msg_id > 0:
