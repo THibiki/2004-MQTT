@@ -1,12 +1,13 @@
 #include <string.h>
+#include <stdio.h>
 
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
 
 #include "wifi.h"
+#include "network_errors.h"
 
 static simple_wifi_t wifi_state = {0};
-
 
 // Initialize WiFi with credentials
 int wifi_init(const char *ssid, const char *password) {
@@ -22,6 +23,7 @@ int wifi_init(const char *ssid, const char *password) {
     // Store credentials
     strncpy(wifi_state.ssid, ssid, sizeof(wifi_state.ssid) - 1);
     strncpy(wifi_state.password, password, sizeof(wifi_state.password) - 1);
+    wifi_state.initialized = true;
     wifi_state.connected = false;
     wifi_state.last_check_time = get_absolute_time();
     wifi_state.last_reconnect_time = nil_time;
@@ -31,7 +33,7 @@ int wifi_init(const char *ssid, const char *password) {
     printf("[INFO] WiFi initialized\n");
     printf("[INFO] SSID: %s\n", wifi_state.ssid);
     
-    return 0;
+    return WIFI_OK;
 }
 
 // Check if WiFi is connected
@@ -66,7 +68,36 @@ const char* wifi_get_status(void) {
     }
 }
 
-// Connect to WiFi (blocking)
+int wifi_get_network_info(wifi_network_info_t *info) {
+    if (info == NULL) {
+        return WIFI_ENONETIF;
+    }
+    
+    struct netif *netif = netif_default;
+    
+    if (netif == NULL) {
+        printf("[ERROR] Network interface not available\n");
+        return WIFI_ENONETIF;
+    }
+    
+    ip4_addr_t *netif_ip = netif_ip4_addr(netif);
+    
+    if (ip4_addr_isany(netif_ip)) {
+        printf("[ERROR] No valid IP address assigned\n");
+        return WIFI_ENOIP;
+    }
+    
+    // Copy all network info
+    ip4_addr_copy(info->ip, *netif_ip);
+    ip4_addr_copy(info->netmask, *netif_ip4_netmask(netif));
+    ip4_addr_copy(info->gateway, *netif_ip4_gw(netif));
+    
+    return WIFI_OK;
+}
+
+
+
+// Connect to WiFi and get IP from DHCP pool (blocking)
 int wifi_connect(void) {
     printf("[INFO] Connecting to: %s\n", wifi_state.ssid);
     
@@ -80,39 +111,16 @@ int wifi_connect(void) {
     // Sucessful Connection
     if (result == 0) {
         wifi_state.connected = true;
-
-        for (int i = 0; i < 50; i++) {
-            cyw43_arch_poll();
-            sleep_ms(10);
-            
-            int link_status = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
-            printf("[DEBUG] Link Status = %d", link_status);
-            if (link_status == CYW43_LINK_UP) {
-                break;  // Status updated to LINK_UP
-            }
-        }
         
         // Get and display IP address
-        struct netif *netif = netif_default;
-        if (netif != NULL) {
-            printf("[INFO] SSID=%s Connected!\n", wifi_state.ssid);
-            printf("[DEBUG] Link Status = %d", cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA));
-            printf("   IP Address: %s\n", ip4addr_ntoa(netif_ip4_addr(netif)));
-            printf("   Netmask: %s\n", ip4addr_ntoa(netif_ip4_netmask(netif)));
-            printf("   Gateway: %s\n", ip4addr_ntoa(netif_ip4_gw(netif)));
-        }
-        
-        if (wifi_state.reconnect_count > 0) {
-            printf("[INFO] Reconnected successfully (attempt #%lu)\n", 
-                   wifi_state.reconnect_count);
-        }
+        wifi_print_network_info();
         
         return 0;
     } else {
         printf("[INFO] WiFi Connection failed: %d\n", result);
         printf("   Status: %s\n", wifi_get_status());
         wifi_state.connected = false;
-        return -1;
+        return WIFI_ENOTCONN;
     }
 }
 
@@ -155,17 +163,64 @@ void wifi_print_stats(void) {
     printf("Reconnect attempts: %lu\n", wifi_state.reconnect_count);
     
     if (wifi_state.connected) {
-        struct netif *netif = netif_default;
-        if (netif != NULL) {
-            printf("IP: %s\n", ip4addr_ntoa(netif_ip4_addr(netif)));
+        wifi_network_info_t net_info;
+        if (wifi_get_network_info(&net_info) == WIFI_OK) {
+            printf("IP: %s\n", ip4addr_ntoa(&net_info.gateway));
         }
     }
 }
 
-// Disconnect from WiFi
-void wifi_disconnect(void) {
-    printf("[INFO] Disconnecting from WiFi...\n");
-    cyw43_arch_disable_sta_mode();
-    wifi_state.connected = false;
-    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
+// WiFi Network Info Direct Print 
+int wifi_print_network_info(void) {
+    struct netif *netif = netif_default;
+    
+    if (netif == NULL) {
+        printf("[ERROR] Network interface not available\n");
+        return WIFI_ENONETIF;
+    }
+    
+    ip4_addr_t *ip = netif_ip4_addr(netif);
+    
+    if (ip4_addr_isany(ip)) {
+        printf("[ERROR] No valid IP address assigned\n");
+        return WIFI_ENOIP;
+    }
+    
+    printf("   IP Address: %s\n", ip4addr_ntoa(ip));
+    printf("   Netmask: %s\n", ip4addr_ntoa(netif_ip4_netmask(netif)));
+    printf("   Gateway: %s\n", ip4addr_ntoa(netif_ip4_gw(netif)));
+    
+    return WIFI_OK;
+}
+
+// int wifi_reset(void) {
+//     if (udp_pcb != NULL) {
+//         udp_remove(udp_pcb);
+//         udp_pcb = NULL;
+//     }
+
+//     wifi_state.connected = false;
+
+//     if (wifi_state.initialized) {
+//         cyw43_arch_deinit();
+//         wifi_state.initialized = false;
+//     }
+
+//     // Re-initialize
+//     return wifi_init(WIFI_SSID, WIFI_PASSWORD);
+// }
+
+int wifi_get_rssi(void) {
+    // Treat all failures here as not connected
+    if (!wifi_state.connected) {
+        return WIFI_ENOTCONN;
+    }
+
+    int32_t rssi;
+    // cyw43_wifi_get_rssi returns 0 on success. Treat failure as not connected.
+    if (cyw43_wifi_get_rssi(&cyw43_state, &rssi) == 0) {
+        return rssi;
+    }
+    
+    return WIFI_ENOTCONN;
 }
