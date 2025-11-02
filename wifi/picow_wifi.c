@@ -4,7 +4,7 @@
 #include "pico/cyw43_arch.h"
 #include "lwip/ip_addr.h"
 
-#include "wifi_config.h"
+#include "wifi_config.h"    // Update this to match the wifi_config base file or change wifi config base to this file name
 #include "wifi.h"
 #include "udp_driver.h"
 #include "mqtt_sn_client.h"
