@@ -96,9 +96,11 @@ static int send_packet(const uint8_t *data, size_t len) {
 
 // Helper function to receive MQTT-SN packet with queue support
 static int receive_packet(uint8_t *buffer, size_t max_len, uint32_t timeout_ms) {
+    printf("[RCV_PKT] Called: max_len=%zu, timeout=%lu\n", max_len, timeout_ms);
     // First check if there's a queued packet
     size_t queued_len;
     if (queue_pop(buffer, max_len, &queued_len)) {
+        printf("[RCV_PKT] Got from queue: %zu bytes\n", queued_len);
         return queued_len;
     }
     
@@ -108,13 +110,19 @@ static int receive_packet(uint8_t *buffer, size_t max_len, uint32_t timeout_ms) 
     
     while (true) {
         int len = wifi_udp_receive(temp_buffer, sizeof(temp_buffer), 0); // Non-blocking
+
+        printf("[RCV_PKT] wifi_udp_receive returned: %d\n", len);
         
         if (len > 0) {
+            printf("[RCV_PKT] Received %d bytes, max_len=%zu\n", len, max_len);
+
             // Got a packet - return it directly if it fits
             if (len <= max_len) {
                 memcpy(buffer, temp_buffer, len);
+                printf("[RCV_PKT] Copied OK, returning %d\n", len);
                 return len;
             } else {
+                printf("[RCV_PKT] ERROR: len(%d) > max_len(%zu)\n", len, max_len);
                 return -1; // Buffer too small
             }
         }

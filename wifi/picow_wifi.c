@@ -15,22 +15,24 @@
 #define BTN_BLOCK_TRANSFER 21 // Button 2: Start image transfer
 #define BTN_QOS_TOGGLE    22  // Button 3: Toggle QoS mode (0 or 1)
 
+// Debounce settings
+#define DEBOUNCE_MS 200
+
 static bool mqtt_initialized = false;
 static bool mqtt_connected = false;
+static uint32_t last_button_press[3] = {0};
 
 // Initialize button GPIOs
-void buttons_init() {
-    gpio_init(BTN_WIFI_INIT);
-    gpio_set_dir(BTN_WIFI_INIT, GPIO_IN);
-    gpio_pull_up(BTN_WIFI_INIT);
-    
-    gpio_init(BTN_BLOCK_TRANSFER);
-    gpio_set_dir(BTN_BLOCK_TRANSFER, GPIO_IN);
-    gpio_pull_up(BTN_BLOCK_TRANSFER);
-    
-    gpio_init(BTN_QOS_TOGGLE);
-    gpio_set_dir(BTN_QOS_TOGGLE, GPIO_IN);
-    gpio_pull_up(BTN_QOS_TOGGLE);
+// Button debounce helper
+bool button_pressed(uint gpio_pin, int button_index) {
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    if (gpio_get(gpio_pin) == 0) {  // Active low (button pressed)
+        if (now - last_button_press[button_index] > DEBOUNCE_MS) {
+            last_button_press[button_index] = now;
+            return true;
+        }
+    }
+    return false;
 }
 
 // MQTT message callback - handles incoming messages from subscribed topics
@@ -68,7 +70,7 @@ void on_message_received(const char *topic, const uint8_t *data, size_t len) {
         snprintf(response, sizeof(response), "ACK: %.*s", (int)len, data);
         // Always use QoS 0 for responses to avoid blocking in callback
         mqttsn_publish("pico/response", (uint8_t*)response, strlen(response), 0);
-        printf("[MQTT-SN] Sent acknowledgment to pico/response\n\n");
+        printf("  → Sent acknowledgment to pico/response\n\n");
     }
     else if (strcmp(topic, "pico/command") == 0) {
         // Handle commands (you can add custom commands here)
@@ -76,29 +78,45 @@ void on_message_received(const char *topic, const uint8_t *data, size_t len) {
             const char *pong = "pong";
             // Always use QoS 0 for responses to avoid blocking in callback
             mqttsn_publish("pico/response", (uint8_t*)pong, 4, 0);
-            printf("[MQTT-SN] Responded with 'pong'\n\n");
+            printf("  → Responded with 'pong'\n\n");
         }
     }
 }
 
-int setup_mqttsn_services(void){
-    printf("========================= Initializing MQTT-SN =========================\n");
+// Initialize button GPIOs
+void buttons_init() {
+    gpio_init(BTN_WIFI_INIT);
+    gpio_set_dir(BTN_WIFI_INIT, GPIO_IN);
+    gpio_pull_up(BTN_WIFI_INIT);
+    
+    gpio_init(BTN_BLOCK_TRANSFER);
+    gpio_set_dir(BTN_BLOCK_TRANSFER, GPIO_IN);
+    gpio_pull_up(BTN_BLOCK_TRANSFER);
+    
+    gpio_init(BTN_QOS_TOGGLE);
+    gpio_set_dir(BTN_QOS_TOGGLE, GPIO_IN);
+    gpio_pull_up(BTN_QOS_TOGGLE);
+}
 
-    printf("[INFO] Creating UDP Socket on port %d...\n", MQTTSN_GATEWAY_PORT);
+
+int setup_mqttsn_services(void){
+
     int ret = wifi_udp_create(MQTTSN_GATEWAY_PORT);
     if (ret != WIFI_OK){
         printf("[ERROR] UDP socket creation failed.\n");
+        sleep_ms(1000);
         return -1;
     }
 
-    printf("[INFO] UDP socket ready!\n");
+    printf("[INFO] UDP socket ready at port %d!\n", MQTTSN_GATEWAY_PORT);
+    sleep_ms(500);
 
     // 2. Initialize MQTT-SN Client
-    printf("[INFO] Initializing MQTT-SN Client...\n");
     ret = mqttsn_init(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT);
-    if (ret != WIFI_OK){
+    if (ret != MQTTSN_OK){
         printf("[ERROR] MQTT-SN Initialization failed.\n");
         wifi_udp_close();
+        sleep_ms(1000);
         return -1;
     }
 
@@ -111,23 +129,23 @@ int setup_mqttsn_services(void){
         printf("[ERROR] Gateway Connection Failed. Error=%d\n", ret);
         mqtt_initialized = false;
         wifi_udp_close();
+        sleep_ms(1000);
         return -1;
     }
 
-    mqtt_connected = true;
-    printf("[INFO] Connected to MQTT-SN Gateway!\n");
+    printf("[INFO] Connected to MQTT-SN Gateway, %s:%d!\n", MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT);
 
     // 4. Register message callback for incoming messages
     mqttsn_set_message_callback(on_message_received);
-    printf("[INFO] Message Callback Registered.\n");
 
     // 5. Subscribe to topics
-    printf("[INFO] Subscribing to topics...\n");
     mqttsn_subscribe("pico/test", QOS_0);
     mqttsn_subscribe("pico/command", QOS_0);
     mqttsn_subscribe("pico/chunks", QOS_0);
     mqttsn_subscribe("pico/block", QOS_0);
     printf("[INFO] Subscribed to: pico/test, pico/command, pico/chunks, pico/block\n");
+
+    mqtt_connected = true;
 
     printf("[INFO] MQTT-SN is operational!\n");
     return 0;
@@ -166,8 +184,6 @@ int main(){
         return 1;
     }
 
-    printf("\n========================= Initial Connection =========================\n");
-
     if (wifi_connect() != 0) {
         printf("[WARNING] Initial connection failed - will retry automatically\n");
     }
@@ -176,12 +192,11 @@ int main(){
 
     // ========================= Application Init =========================
     if (wifi_is_connected()) {
-        printf("\n========================= Initializing Application =========================\n");
         
         // Initialize features (MQTT-SN, file transfer etc.)
         
         if (setup_mqttsn_services() == 0){
-            printf("[INFO] Application ready\n");
+            printf("[INFO] Application ready\n\n");
         } else {
             printf("[WARNING] MQTT-SN initialization failed - will retry on reconnect\n");
         }
@@ -192,14 +207,13 @@ int main(){
 
     // Main Loop
     bool was_connected = wifi_is_connected();   //
-    int loop_counter = 0;
     uint32_t last_publish = 0;
     uint32_t sequence_number = 0;
     absolute_time_t last_stats_print = get_absolute_time();
 
     printf("========================= Entering Main Loop =========================");
 
-    while (1){
+    while (true){
         uint32_t now = to_ms_since_boot(get_absolute_time());
 
         // ========================= WiFi Reconnection Handling =========================
@@ -211,9 +225,8 @@ int main(){
         if (is_connected && !was_connected){
             // is_connected refers to new wifi status gotten (Connect/Not Connected)
             // was_connected refers to PREVIOUS wifi status gotten (Connect/Not Connected)
-            printf("[INFO] WiFi Reconnected!\n");
+            printf("[INFO] WiFi Reconnected! Reinitalizing Network Services...\n");
 
-            printf("[INFO] Reinitalizing Network Services...\n");
             if (reinit_mqttsn() == 0 ){
                 printf("[INFO] MQTT-SN reinitialized sucessfully\n");
                 printf("[INFO] Ready for publish/subscribe\n\n");
@@ -225,8 +238,7 @@ int main(){
 
         // 2. WiFi Disconnected
         if (!is_connected && was_connected){
-            printf("[WARNING] WiFi Connection Lost!\n");
-            printf("[WARNING] MQTT-SN service unavailable\n");
+            printf("[WARNING] WiFi Connection Lost! MQTT-SN service unavailable\n");
             printf("[INFO] Auto-reconnect will attempt to restore WiFi...\n\n");
             mqtt_connected = false;
             mqtt_initialized = false;
@@ -241,9 +253,8 @@ int main(){
             // Publish test messages every 5 seconds
             if (now - last_publish > 5000){
                 char message[64];
-                snprintf(message, sizeof(message), "seq=%lu, timestamp=%lu", sequence_number, now);
-
-                printf("[%lu ms] Publishing: %s\n", now, message);
+                snprintf(message, sizeof(message), "seq=%lu,timestamp=%lu", sequence_number, now);
+                printf("[%lu ms] Publishing QoS 0: seq=%lu (fire-and-forget)\n", now, sequence_number);
 
                 int ret = mqttsn_publish("pico/data", (uint8_t*)message, strlen(message), 0);
                 if (ret == MQTTSN_OK){
@@ -259,28 +270,22 @@ int main(){
             // Poll for incoming MQTT-SN messages
             mqttsn_poll();
 
-            if(loop_counter % 1000 == 0){
-                printf("[APP] Running... (loop:%d)\n", loop_counter);
+            // Poll for WiFi stack
+            cyw43_arch_poll();
 
-                // Application core codes: MQTT-SN messages, File Transfer
-            }
         } else if (is_connected && !mqtt_connected){
 
-            if(loop_counter % 1000 == 0){
-                printf("[APP] WiFi Connected, attempting MQTT-SN connection...\n");
-                if (setup_mqttsn_services() == 0){
-                    printf("[INFO] MQTT-SN Connected Sucessfully.\n");
-                }
-            } else {
-                printf("[WARNING] MQTT-SN connection attempt failed\n");
+            printf("[APP] WiFi Connected, attempting MQTT-SN connection...\n");
+            if (setup_mqttsn_services() == 0){
+                printf("[INFO] MQTT-SN Connected Sucessfully.\n");
             }
+            
+            printf("[WARNING] MQTT-SN connection attempt failed\n");
 
         } else {
             // Wait for WiFi Connection
-            if (loop_counter % 10000 == 0) {
-                printf("[APP] Waiting for WiFi... (Status: %s)\n", 
+            printf("[APP] Waiting for WiFi... (Status: %s)\n", 
                        wifi_get_status());
-            }
         }
 
         // Print WiFi stats every 60 seconds
@@ -294,8 +299,7 @@ int main(){
 
         cyw43_arch_poll(); // network processing
         
-        loop_counter++;
-        sleep_ms(1);
+        sleep_ms(10);
     }
 
     return 0;

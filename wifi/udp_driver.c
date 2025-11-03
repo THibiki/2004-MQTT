@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h> //for debugging to see values
 #include <lwip/udp.h>
 #include <lwip/netif.h>
 
@@ -18,25 +19,24 @@ static size_t recv_len = 0;
 static bool data_received = false;
 
 // Callback for UDP receives
-static void udp_recv_callback(void *args, struct udp_pcb *pcb, struct pbuf *p, 
-    const ip_addr_t *addr, u16_t port){
-
-        if (p!= NULL){
-            printf("[INFO] UDP callback: recevied %d bytes from %s:%n\n", 
-                p->len, ip4addr_ntoa(addr), port);
-            
-            if (recv_buffer != NULL){
-                // Copy data up to available buffer size
-                size_t copy_len = p->len < recv_len ? p->len : recv_len;
-                memcpy(recv_buffer, p->payload, copy_len);
-                recv_len = copy_len;     // Updates actual bytes copied
-                printf("[INFO] Copied %zu bytes to buffer\n", copy_len);
-            } else {
-                printf("[INFO] No receive buffer set,, dropping packet\n");
-            }
-
-            pbuf_free(p);
+static void udp_recv_callback(void *arg, struct udp_pcb *pcb, struct pbuf *p,
+                               const ip_addr_t *addr, u16_t port) {
+    if (p != NULL) {
+        printf("[UDP CALLBACK] Received %d bytes from port %s:%d\n", p->len, ip4addr_ntoa(addr),port);
+        
+        if (recv_buffer != NULL) {
+            // Copy data up to the available buffer size
+            size_t copy_len = p->len < recv_len ? p->len : recv_len;
+            memcpy(recv_buffer, p->payload, copy_len);
+            // Update recv_len to the actual amount copied
+            recv_len = copy_len;
+            data_received = true;
+            printf("[UDP CALLBACK] Copied %d bytes to buffer\n", copy_len);
+        } else {
+            printf("[UDP CALLBACK] No receive buffer set, dropping packet\n");
         }
+        pbuf_free(p);
+    }
 }
 
 
@@ -75,7 +75,7 @@ int wifi_udp_create(uint16_t local_port){
 
     udp_recv(udp_pcb, udp_recv_callback, NULL);
 
-    printf("[INFO] UDP Socket created and bound to port $d\n", local_port);
+    printf("[INFO] UDP Socket created and bound to port %d\n", local_port);
     return WIFI_OK;                        
 }
 
@@ -134,8 +134,8 @@ int wifi_udp_send(const char *dest_ip, uint16_t dest_port,
         return WIFI_OK;
 }
 
-int wifi_udp_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_ms){
-
+int wifi_udp_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_ms) {
+    // Treat all failures here as not connected
     if (udp_pcb == NULL){
         printf("[UDP] Received failed: socket not created\n");
         return WIFI_ESOCKET;
@@ -145,43 +145,48 @@ int wifi_udp_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_ms){
         printf("[UDP] Received failed: Invalid Buffer\n");
     }
 
+    // Set up receive buffer
     recv_buffer = buffer;
     recv_len = max_len;
     data_received = false;
 
-    if (timeout_ms == 0){
+    printf("Before poll, data_recieved = %d\n", data_received);
+    if (timeout_ms == 0) {
+        // Non-blocking mode: Poll once and return immediately
         cyw43_arch_poll();
-
-        if (!data_received){
+        printf("After poll, data_recieved = %d | !data_received = %d\n", data_received, !data_received);
+        if (!data_received) {
+            printf("After poll, !data_recieved = %d\n", !data_received);
             recv_buffer = NULL;
-            return 0;
+            // Return 0 bytes received for non-blocking poll with no data
+            return 0; 
         }
-
-        return 0;
     } else {
+        // Blocking mode with timeout
         absolute_time_t timeout_time = make_timeout_time_ms(timeout_ms);
-
-        while (!data_received){
+        
+        while (!data_received) {
+            // Process any pending packets
             cyw43_arch_poll();
-
+            
             if (time_reached(timeout_time)) {
                 recv_buffer = NULL;
-                printf("[UDP] Recieve timeout after %lu ms\n", timeout_ms);
-                return WIFI_ETIMEDOUT;
+                return WIFI_ETIMEDOUT; // Operation timeout
             }
-
-            sleep_ms(1);    // small sleep to avoid busy-waiting
+            
+            // Sleep for 1ms to yield CPU and avoid spinning too fast
+            sleep_ms(1);
         }
-
-        // Data Recieved
-        int bytes_received = recv_len;
-        recv_buffer = NULL;
-        data_received = false;
-
-        printf("[UDP] Received %d bytes (blocking, %lu ms timeout)\n", bytes_received, timeout_ms);
-        return bytes_received;
     }
+
+    int bytes_received = recv_len;
+    recv_buffer = NULL;
+    data_received = false;
+
+    printf("[UDP] Received %d bytes (blocking, %lu ms timeout)\n", bytes_received, timeout_ms);
+    return bytes_received;
 }
+
 
 void wifi_udp_close(void){
     if (udp_pcb != NULL){
