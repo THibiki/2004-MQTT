@@ -18,6 +18,13 @@ typedef enum {
     QOS_2 = 2   // Exactly once
 } mqttsn_qos_t;
 
+// MQTT-SN topic ID types
+typedef enum {
+    TOPIC_TYPE_NORMAL = 0x00,      // Normal topic name
+    TOPIC_TYPE_PREDEFINED = 0x01,  // Pre-defined topic ID
+    TOPIC_TYPE_SHORT = 0x02        // Short topic name (2 chars)
+} mqttsn_topic_type_t;
+
 // MQTT-SN functions
 int mqttsn_init(const char *gateway_host, uint16_t gateway_port);
 int mqttsn_connect(const char *client_id, uint16_t keep_alive);
@@ -26,6 +33,10 @@ int mqttsn_subscribe(const char *topic, mqttsn_qos_t qos);
 int mqttsn_publish(const char *topic, const uint8_t *data, size_t len, mqttsn_qos_t qos);
 int mqttsn_poll(void);
 bool mqttsn_is_connected(void);
+
+// New standard MQTT-SN functions
+int mqttsn_register_topic(const char *topic);  // Register topic, get topic ID
+int mqttsn_send_pingreq(void);                 // Send PINGREQ for keep-alive
 
 // Message callback type
 typedef void (*mqttsn_message_callback_t)(const char *topic, const uint8_t *data, size_t len);

@@ -23,6 +23,9 @@ int wifi_get_ip(char *buf, size_t len);
 // Create UDP socket and bind to local port
 int wifi_udp_create(uint16_t local_port);
 
+// Connect UDP socket to remote address (ensures consistent source port)
+int wifi_udp_connect_remote(const char *dest_ip, uint16_t dest_port);
+
 // Send UDP packet
 int wifi_udp_send(const char *dest_ip, uint16_t dest_port, const uint8_t *data, size_t len);
 

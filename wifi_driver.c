@@ -13,22 +13,28 @@ static uint8_t *recv_buffer = NULL;
 static size_t recv_len = 0;
 static bool data_received = false;
 
+// Persistent buffer to cache incoming packets
+#define PACKET_CACHE_SIZE 1024
+static uint8_t packet_cache[PACKET_CACHE_SIZE];
+static size_t packet_cache_len = 0;
+static bool packet_cached = false;
+
 // Callback for UDP receive
 static void udp_recv_callback(void *arg, struct udp_pcb *pcb, struct pbuf *p,
                                const ip_addr_t *addr, u16_t port) {
     if (p != NULL) {
-        printf("UDP callback: received %d bytes from port %d\n", p->len, port);
-        
         if (recv_buffer != NULL) {
-            // Copy data up to the available buffer size
+            // Direct copy to application buffer
             size_t copy_len = p->len < recv_len ? p->len : recv_len;
             memcpy(recv_buffer, p->payload, copy_len);
-            // Update recv_len to the actual amount copied
             recv_len = copy_len;
             data_received = true;
-            printf("  -> Copied %d bytes to buffer\n", copy_len);
         } else {
-            printf("  -> No receive buffer set, dropping packet\n");
+            // Cache the packet for later retrieval
+            size_t copy_len = p->len < PACKET_CACHE_SIZE ? p->len : PACKET_CACHE_SIZE;
+            memcpy(packet_cache, p->payload, copy_len);
+            packet_cache_len = copy_len;
+            packet_cached = true;
         }
         pbuf_free(p);
     }
@@ -143,6 +149,32 @@ int wifi_udp_create(uint16_t local_port) {
     return WIFI_OK;
 }
 
+int wifi_udp_connect_remote(const char *dest_ip, uint16_t dest_port) {
+    if (!initialized || !connected || udp_pcb == NULL) {
+        return WIFI_ENOTCONN;
+    }
+
+    if (dest_ip == NULL || dest_port == 0) {
+        return WIFI_ETIMEDOUT;
+    }
+
+    ip_addr_t dest_addr;
+    if (!ip4addr_aton(dest_ip, &dest_addr)) {
+        return WIFI_ETIMEDOUT;
+    }
+
+    // Connect PCB to remote address - this locks the source port
+    err_t err = udp_connect(udp_pcb, &dest_addr, dest_port);
+    if (err != ERR_OK) {
+        printf("Failed to connect UDP PCB to %s:%d (err=%d)\n", dest_ip, dest_port, err);
+        return WIFI_ETIMEDOUT;
+    }
+
+    printf("UDP PCB connected to %s:%d (source port locked to %d)\n", 
+           dest_ip, dest_port, udp_pcb->local_port);
+    return WIFI_OK;
+}
+
 int wifi_udp_send(const char *dest_ip, uint16_t dest_port, const uint8_t *data, size_t len) {
     // Treat all failures here as not connected
     if (!initialized || !connected || udp_pcb == NULL) {
@@ -150,12 +182,7 @@ int wifi_udp_send(const char *dest_ip, uint16_t dest_port, const uint8_t *data, 
     }
 
     // Treat invalid args as timeout (simplifying error codes)
-    if (dest_ip == NULL || data == NULL || dest_port == 0) {
-        return WIFI_ETIMEDOUT;
-    }
-
-    ip_addr_t dest_addr;
-    if (!ip4addr_aton(dest_ip, &dest_addr)) {
+    if (data == NULL) {
         return WIFI_ETIMEDOUT;
     }
 
@@ -168,11 +195,12 @@ int wifi_udp_send(const char *dest_ip, uint16_t dest_port, const uint8_t *data, 
 
     memcpy(p->payload, data, len);
 
-    err_t err = udp_sendto(udp_pcb, p, &dest_addr, dest_port);
+    // Always use udp_send() since PCB is connected
+    err_t err = udp_send(udp_pcb, p);
     pbuf_free(p);
 
     if (err != ERR_OK) {
-        // Treat send failure (e.g., no route) as timeout
+        printf("[ERROR] udp_send failed: %d\n", err);
         return WIFI_ETIMEDOUT;
     }
 
@@ -183,6 +211,15 @@ int wifi_udp_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_ms) {
     // Treat all failures here as not connected
     if (!initialized || !connected || udp_pcb == NULL || buffer == NULL) {
         return WIFI_ENOTCONN;
+    }
+
+    // Check if we have a cached packet first
+    if (packet_cached) {
+        size_t copy_len = packet_cache_len < max_len ? packet_cache_len : max_len;
+        memcpy(buffer, packet_cache, copy_len);
+        packet_cached = false;
+        printf("wifi_udp_receive() returning: %d bytes (from cache)\n", copy_len);
+        return copy_len;
     }
 
     // Set up receive buffer

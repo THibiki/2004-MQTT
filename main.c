@@ -395,6 +395,10 @@ int main() {
     uint32_t consecutive_failures = 0;
     uint32_t total_failed_publishes = 0;
     
+    // WiFi reconnection tracking
+    uint32_t last_wifi_check = 0;
+    #define WIFI_CHECK_INTERVAL_MS 5000  // Check WiFi every 5 seconds
+    
     // Main loop
     while (true) {
         uint32_t now = to_ms_since_boot(get_absolute_time());
@@ -446,14 +450,23 @@ int main() {
                 sleep_ms(1000);
                 continue;
             }
-            printf("  ✓ UDP socket ready on port 1884\n\n");
+            printf("  ✓ UDP socket ready on port 1884\n");
+            
+            // Connect UDP to gateway to lock source port
+            const char *gateway_ip = "172.20.10.14";
+            uint16_t gateway_port = 1884;
+            
+            ret = wifi_udp_connect_remote(gateway_ip, gateway_port);
+            if (ret != WIFI_OK) {
+                printf("  ✗ Failed to connect UDP to gateway\n");
+                sleep_ms(1000);
+                continue;
+            }
+            printf("  ✓ UDP connected to gateway (source port locked)\n\n");
             sleep_ms(500);
             
             // MQTT-SN Connection
             printf("→ Connecting to MQTT-SN gateway...\n");
-            
-            const char *gateway_ip = "172.20.10.14";
-            uint16_t gateway_port = 1884;
             
             if (mqttsn_init(gateway_ip, gateway_port) != MQTTSN_OK) {
                 printf("  ✗ MQTT-SN init failed\n");
@@ -675,8 +688,8 @@ int main() {
         if (mqtt_connected && qos_mode == 1 && (now - last_publish > 5000)) {
             char message[64];
             snprintf(message, sizeof(message), "seq=%lu,timestamp=%lu", sequence_number, now);
-            printf("\n[%lu ms] 📨 Publishing QoS 1: seq=%lu (waiting for PUBACK...)\n", now, sequence_number);
-            printf("         ⏱️  Pico will process incoming messages during wait...\n");
+            printf("\n[%lu ms] QoS 1 Publish: seq=%lu to topic 'pico/data'\n", now, sequence_number);
+            printf("         Message: %s\n", message);
             
             bool publish_success = false;
             int max_retries = 3;
@@ -686,11 +699,11 @@ int main() {
                 int ret = mqttsn_publish("pico/data", (uint8_t*)message, strlen(message), 1);
                 
                 if (ret == MQTTSN_OK) {
-                    printf("         ✅ PUBACK received for seq=%lu", sequence_number);
+                    printf("         [SUCCESS] PUBACK received for seq=%lu", sequence_number);
                     if (attempt > 0) {
-                        printf(" (succeeded on retry %d)", attempt);
+                        printf(" (retry attempt %d)", attempt);
                     }
-                    printf("\n");
+                    printf(" - Gateway acknowledged message\n");
                     
                     publish_success = true;
                     consecutive_failures = 0;  // Reset on success
@@ -699,9 +712,9 @@ int main() {
                     // Publish failed
                     if (attempt < max_retries - 1) {
                         // Not last attempt - retry with backoff
-                        printf("         ✗ PUBACK timeout for seq=%lu (attempt %d/%d)\n", 
+                        printf("         [TIMEOUT] No PUBACK received for seq=%lu (attempt %d/%d failed)\n", 
                                sequence_number, attempt + 1, max_retries);
-                        printf("         ⏳ Retrying in %lu ms...\n", retry_delays[attempt]);
+                        printf("         Retrying in %lu ms (exponential backoff)...\n", retry_delays[attempt]);
                         
                         // Wait with polling to keep system responsive
                         uint32_t retry_start = to_ms_since_boot(get_absolute_time());
@@ -716,7 +729,7 @@ int main() {
                         }
                     } else {
                         // Last attempt failed
-                        printf("         ✗ PUBACK timeout for seq=%lu (all %d attempts failed)\n", 
+                        printf("         [FAILED] No PUBACK received for seq=%lu after all %d attempts\n", 
                                sequence_number, max_retries);
                     }
                 }
@@ -727,45 +740,47 @@ int main() {
                 consecutive_failures++;
                 total_failed_publishes++;
                 
-                printf("         ⚠️  Publish failed after %d retries (consecutive failures: %lu, total: %lu)\n", 
-                       max_retries, consecutive_failures, total_failed_publishes);
+                printf("         [FAILURE] Publish failed after %d retries\n", max_retries);
+                printf("         Failure stats: consecutive=%lu, total=%lu\n", 
+                       consecutive_failures, total_failed_publishes);
                 
                 // Check if gateway appears to be down (5 consecutive failures)
                 if (consecutive_failures >= 5) {
                     printf("\n");
                     printf("═══════════════════════════════════════════════════════\n");
-                    printf("  ⚠️  GATEWAY DOWN DETECTED\n");
+                    printf("  GATEWAY DOWN DETECTED - RECONNECTING\n");
                     printf("═══════════════════════════════════════════════════════\n");
-                    printf("  %lu consecutive publish failures detected.\n", consecutive_failures);
-                    printf("  Gateway may be offline or unreachable.\n");
-                    printf("  Attempting to reconnect...\n\n");
+                    printf("  Consecutive failures: %lu\n", consecutive_failures);
+                    printf("  Gateway appears offline or unreachable.\n");
+                    printf("  Initiating reconnection sequence...\n\n");
                     
                     // Disconnect and attempt reconnection
                     mqtt_connected = false;
                     consecutive_failures = 0;  // Reset for fresh start
                     
-                    printf("  → Reconnecting to MQTT-SN gateway...\n");
+                    printf("  Step 1: Reinitializing MQTT-SN connection...\n");
                     sleep_ms(1000);
                     
                     const char *gateway_ip = "172.20.10.14";
                     uint16_t gateway_port = 1884;
                     
                     if (mqttsn_init(gateway_ip, gateway_port) != MQTTSN_OK) {
-                        printf("  ✗ MQTT-SN init failed\n");
+                        printf("  [FAILED] MQTT-SN init failed\n");
                     } else {
                         int ret = mqttsn_connect("PicoW_Client", 60);
                         if (ret != MQTTSN_OK) {
-                            printf("  ✗ Reconnection failed (will retry later)\n");
+                            printf("  [FAILED] Reconnection failed (will retry later)\n");
                         } else {
-                            printf("  ✓ Reconnected successfully!\n");
+                            printf("  [SUCCESS] Reconnected to gateway!\n");
                             
                             // Re-subscribe to topics
+                            printf("  Step 2: Resubscribing to topics...\n");
                             mqttsn_set_message_callback(on_message_received);
                             mqttsn_subscribe("pico/test", 0);
                             mqttsn_subscribe("pico/command", 0);
                             mqttsn_subscribe("pico/chunks", 0);
                             mqttsn_subscribe("pico/block", 0);
-                            printf("  ✓ Resubscribed to topics\n");
+                            printf("  [SUCCESS] Resubscribed to all topics\n");
                             
                             mqtt_connected = true;
                         }
@@ -779,16 +794,8 @@ int main() {
             last_publish = now;
         }
         
-        // ═══════════════════════════════════════════════════════
-        // Heartbeat in Stopped/QoS1 mode to keep gateway address updated
-        // ═══════════════════════════════════════════════════════
-        if (mqtt_connected && qos_mode != 0 && (now - last_publish > 10000)) {
-            // Send a lightweight keepalive every 10 seconds in non-QoS0 modes
-            // This ensures gateway knows our current UDP port for incoming messages
-            const char *keepalive = "alive";
-            mqttsn_publish("pico/keepalive", (uint8_t*)keepalive, 5, 0);
-            last_publish = now;
-        }
+        // NOTE: Keep-alive (PINGREQ/PINGRESP) is now handled automatically 
+        // by mqttsn_poll() - no need for custom heartbeat messages
         
         // ═══════════════════════════════════════════════════════
         // Periodic SD Card Check (every 500ms for faster detection)
@@ -804,6 +811,89 @@ int main() {
                 wait_for_sd_card();
                 // Reset the check timer after recovery
                 last_sd_check = to_ms_since_boot(get_absolute_time());
+            }
+        }
+        
+        // ═══════════════════════════════════════════════════════
+        // Periodic WiFi Connection Check (every 5 seconds)
+        // ═══════════════════════════════════════════════════════
+        if (wifi_initialized && (now - last_wifi_check > WIFI_CHECK_INTERVAL_MS)) {
+            last_wifi_check = now;
+            
+            // Check if WiFi is still connected
+            if (!wifi_is_connected()) {
+                printf("\n[%lu ms] ⚠️  WiFi DISCONNECTION DETECTED!\n", now);
+                printf("Attempting to reconnect to WiFi...\n");
+                
+                // Mark as disconnected
+                wifi_initialized = false;
+                mqtt_connected = false;
+                
+                // Attempt reconnection with retries
+                int reconnect_attempts = 0;
+                #define MAX_WIFI_RECONNECT_ATTEMPTS 3
+                
+                const char *ssid = "jer";
+                const char *password = "jeraldgoh";
+                const char *gateway_ip = "172.20.10.14";
+                uint16_t gateway_port = 1884;
+                
+                while (reconnect_attempts < MAX_WIFI_RECONNECT_ATTEMPTS) {
+                    reconnect_attempts++;
+                    printf("WiFi reconnection attempt %d/%d...\n", 
+                           reconnect_attempts, MAX_WIFI_RECONNECT_ATTEMPTS);
+                    
+                    if (wifi_connect(ssid, password) == WIFI_OK) {
+                        printf("[SUCCESS] WiFi reconnected!\n");
+                        wifi_initialized = true;
+                        
+                        // Reinitialize UDP
+                        if (wifi_udp_create(1884) == WIFI_OK) {
+                            printf("[SUCCESS] UDP socket reinitialized on port 1884\n");
+                            
+                            // Try to connect UDP to remote gateway
+                            if (wifi_udp_connect_remote(gateway_ip, gateway_port) == WIFI_OK) {
+                                printf("[SUCCESS] UDP connected to gateway %s:%d\n", gateway_ip, gateway_port);
+                            } else {
+                                printf("[WARNING] UDP connect failed, will use sendto mode\n");
+                            }
+                            
+                            // Reconnect to MQTT-SN
+                            printf("Reconnecting to MQTT-SN gateway...\n");
+                            if (mqttsn_connect("PicoW_Client", 60) == MQTTSN_OK) {
+                                printf("[SUCCESS] MQTT-SN reconnected!\n");
+                                mqtt_connected = true;
+                                consecutive_failures = 0;  // Reset failure counter
+                                
+                                // Re-subscribe to topics
+                                mqttsn_set_message_callback(on_message_received);
+                                mqttsn_subscribe("pico/test", 0);
+                                mqttsn_subscribe("pico/command", 0);
+                                mqttsn_subscribe("pico/chunks", 0);
+                                mqttsn_subscribe("pico/block", 0);
+                            } else {
+                                printf("[FAILED] MQTT-SN reconnection failed\n");
+                            }
+                        } else {
+                            printf("[FAILED] UDP reinitialization failed\n");
+                        }
+                        break;
+                    } else {
+                        printf("[FAILED] WiFi reconnection attempt %d failed\n", reconnect_attempts);
+                        if (reconnect_attempts < MAX_WIFI_RECONNECT_ATTEMPTS) {
+                            printf("Waiting 5 seconds before retry...\n");
+                            sleep_ms(5000);
+                        }
+                    }
+                }
+                
+                if (!wifi_initialized) {
+                    printf("[FAILED] WiFi reconnection failed after %d attempts\n", MAX_WIFI_RECONNECT_ATTEMPTS);
+                    printf("Will retry in %d seconds...\n", WIFI_CHECK_INTERVAL_MS / 1000);
+                }
+                
+                // Reset the check timer
+                last_wifi_check = to_ms_since_boot(get_absolute_time());
             }
         }
         
