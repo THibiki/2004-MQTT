@@ -26,14 +26,23 @@ class MQTTSNGateway:
         print("=" * 50)
         
         # Initialize MQTT client
-        self.mqtt_client = mqtt.Client()
+        try:
+            self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+        except:
+            # Fallback for older paho-mqtt versions
+            self.mqtt_client = mqtt.Client()
+        
         self.mqtt_client.on_connect = self.on_mqtt_connect
         self.mqtt_client.on_message = self.on_mqtt_message
         
         try:
             self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, 60)
-            self.mqtt_client.loop_start()
+            # Start MQTT loop in background thread
+            mqtt_thread = threading.Thread(target=self.mqtt_client.loop_forever, daemon=True)
+            mqtt_thread.start()
             print("✅ Connected to MQTT broker")
+            # Give the client time to establish connection and subscribe
+            time.sleep(1)
         except Exception as e:
             print(f"❌ Failed to connect to MQTT broker: {e}")
             return
@@ -197,14 +206,18 @@ class MQTTSNGateway:
         if rc == 0:
             print("✅ Connected to MQTT broker successfully")
             # Subscribe only to command topics (not data topics that Pico publishes)
-            client.subscribe("pico/test")
-            client.subscribe("pico/command")
-            print("✅ Subscribed to pico/test and pico/command for forwarding to Pico")
+            result1, mid1 = client.subscribe("pico/test")
+            result2, mid2 = client.subscribe("pico/command")
+            print(f"✅ Subscribed to pico/test (result={result1}, mid={mid1})")
+            print(f"✅ Subscribed to pico/command (result={result2}, mid={mid2})")
+            print(f"   Callback set: on_message={client.on_message}")
         else:
             print(f"❌ Failed to connect to MQTT broker: {rc}")
     
     def on_mqtt_message(self, client, userdata, msg):
-        print(f"📨 MQTT message received: {msg.topic} = {msg.payload.decode('utf-8', errors='ignore')}")
+        print(f"\n📨 MQTT MESSAGE CALLBACK TRIGGERED!")
+        print(f"   Topic: {msg.topic}")
+        print(f"   Payload: {msg.payload.decode('utf-8', errors='ignore')}")
         print(f"   Debug: Known clients = {list(self.clients.keys())}")
         
         # Forward message to Pico W if topic starts with "pico/"

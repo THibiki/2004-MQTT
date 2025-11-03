@@ -28,6 +28,11 @@ static uint32_t last_button_press[3] = {0};
 static uint32_t last_sd_check = 0;
 #define SD_CHECK_INTERVAL_MS 1000  // Check SD card every second
 
+// Image filename configuration
+static char selected_image[64] = "download.jpg";  // Default filename
+static int image_file_count = 0;
+static char image_files[10][64];  // Store up to 10 image filenames
+
 // Button debounce helper
 bool button_pressed(uint gpio_pin, int button_index) {
     uint32_t now = to_ms_since_boot(get_absolute_time());
@@ -38,6 +43,65 @@ bool button_pressed(uint gpio_pin, int button_index) {
         }
     }
     return false;
+}
+
+// Scan SD card for image files and automatically select the first one found
+bool scan_and_select_image() {
+    if (!sd_card_mounted) {
+        printf("  ⚠ SD card not mounted\n");
+        return false;
+    }
+    
+    DIR dir;
+    FILINFO fno;
+    image_file_count = 0;
+    
+    printf("\n📸 Scanning for image files...\n");
+    
+    FRESULT res = f_opendir(&dir, "/");
+    if (res != FR_OK) {
+        printf("  ✗ Failed to open directory (FR: %d)\n", res);
+        return false;
+    }
+    
+    // Scan for .jpg and .jpeg files
+    while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0] != 0) {
+        if (!(fno.fattrib & AM_DIR)) {
+            size_t len = strlen(fno.fname);
+            // Check for .jpg or .jpeg extension (case insensitive)
+            if (len > 4) {
+                const char *ext = &fno.fname[len - 4];
+                if (strcasecmp(ext, ".jpg") == 0 || 
+                    (len > 5 && strcasecmp(&fno.fname[len - 5], ".jpeg") == 0)) {
+                    if (image_file_count < 10) {
+                        strncpy(image_files[image_file_count], fno.fname, 63);
+                        image_files[image_file_count][63] = '\0';
+                        printf("  [%d] %s (%lu bytes)\n", 
+                               image_file_count + 1, fno.fname, fno.fsize);
+                        image_file_count++;
+                    }
+                }
+            }
+        }
+    }
+    f_closedir(&dir);
+    
+    if (image_file_count == 0) {
+        printf("  ⚠ No .jpg/.jpeg files found on SD card\n");
+        return false;
+    }
+    
+    // Auto-select the first image found
+    strncpy(selected_image, image_files[0], 63);
+    selected_image[63] = '\0';
+    
+    printf("\n  ✓ Auto-selected: %s\n", selected_image);
+    if (image_file_count > 1) {
+        printf("  ℹ Found %d image file(s) - using first one\n", image_file_count);
+    }
+    printf("\n");
+    
+    return true;
 }
 
 // MQTT message callback - handles incoming messages from subscribed topics
@@ -70,12 +134,18 @@ void on_message_received(const char *topic, const uint8_t *data, size_t len) {
     
     // Handle specific topics
     if (strcmp(topic, "pico/test") == 0) {
+        printf("  🔔 Matched pico/test - preparing response...\n");
         // Echo back with "ACK: " prefix
         char response[128];
         snprintf(response, sizeof(response), "ACK: %.*s", (int)len, data);
+        printf("  📤 Sending response (QoS 0): %s\n", response);
         // Always use QoS 0 for responses to avoid blocking in callback
-        mqttsn_publish("pico/response", (uint8_t*)response, strlen(response), 0);
-        printf("  → Sent acknowledgment to pico/response\n\n");
+        int ret = mqttsn_publish("pico/response", (uint8_t*)response, strlen(response), 0);
+        if (ret == MQTTSN_OK) {
+            printf("  ✅ Response sent successfully to pico/response\n\n");
+        } else {
+            printf("  ❌ Response send failed (ret=%d)\n\n", ret);
+        }
     }
     else if (strcmp(topic, "pico/command") == 0) {
         // Handle commands (you can add custom commands here)
@@ -100,14 +170,8 @@ bool check_sd_card_status() {
     FRESULT res = f_opendir(&dir, "/");
     if (res == FR_OK) {
         f_closedir(&dir);
-        
-        // Double-check by trying to read a file
-        FIL test_file;
-        FRESULT test_res = f_open(&test_file, "/download.jpg", FA_READ);
-        if (test_res == FR_OK) {
-            f_close(&test_file);
-            return true;
-        }
+        // Just verify directory access is working
+        return true;
     }
     return false;
 }
@@ -146,21 +210,21 @@ bool initialize_sd_card() {
                 
                 FRESULT dir_res = f_opendir(&dir, "/");
                 if (dir_res == FR_OK) {
+                    printf("  📁 Files on SD card:\n");
                     while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0] != 0) {
-                        if (!(fno.fattrib & AM_DIR)) file_count++;
+                        if (!(fno.fattrib & AM_DIR)) {
+                            file_count++;
+                            printf("     • %s (%lu bytes)\n", fno.fname, fno.fsize);
+                        }
                     }
                     f_closedir(&dir);
                     
-                    // Test file access to ensure filesystem is truly working
-                    FIL test_file;
-                    FRESULT test_res = f_open(&test_file, "/download.jpg", FA_READ);
-                    if (test_res == FR_OK) {
-                        f_close(&test_file);
+                    if (file_count > 0) {
                         printf("  ✓ SD card fully operational!\n");
-                        printf("  📁 %d files on SD card\n\n", file_count);
+                        printf("  ✓ Found %d file(s)\n\n", file_count);
                         return true;
                     } else {
-                        printf("  ✗ File access test failed (FR: %d)\n", test_res);
+                        printf("  ⚠ No files found on SD card\n");
                         f_unmount("/");
                         sleep_ms(200);
                     }
@@ -234,12 +298,10 @@ void wait_for_sd_card() {
                         }
                         f_closedir(&dir);
                         
-                        // Try to actually read a file to ensure it's really working
-                        printf("  Testing file access...\n");
-                        FIL test_file;
-                        FRESULT test_res = f_open(&test_file, "/download.jpg", FA_READ);
-                        if (test_res == FR_OK) {
-                            f_close(&test_file);
+                        // Verify we found at least some files
+                        printf("  Found %d files on SD card\n", file_count);
+                        
+                        if (file_count > 0) {
                             printf("✓ SD card fully operational!\n");
                             printf("📁 %d files found on SD card\n", file_count);
                             printf("Resuming operations...\n\n");
@@ -247,7 +309,7 @@ void wait_for_sd_card() {
                             sd_card_mounted = true;
                             return;
                         } else {
-                            printf("✗ File access test failed (FR: %d)\n", test_res);
+                            printf("⚠ No files found on SD card\n");
                             f_unmount("/");
                             sleep_ms(500);
                         }
@@ -318,7 +380,7 @@ int main() {
     printf("                    CONTROL MENU                       \n");
     printf("═══════════════════════════════════════════════════════\n");
     printf("  GPIO %d: Initialize WiFi & MQTT Connection\n", BTN_WIFI_INIT);
-    printf("  GPIO %d: Transfer Image (download.jpg)\n", BTN_BLOCK_TRANSFER);
+    printf("  GPIO %d: Transfer Image (auto-detects .jpg from SD)\n", BTN_BLOCK_TRANSFER);
     printf("  GPIO %d: Toggle QoS Mode\n", BTN_QOS_TOGGLE);
     printf("           • QoS 0 - Fast, publishes seq messages\n");
     printf("           • QoS 1 - Reliable, waits for PUBACK\n");
@@ -328,6 +390,10 @@ int main() {
     
     uint32_t last_publish = 0;
     uint32_t sequence_number = 0;
+    
+    // Retry and failure tracking for QoS 1
+    uint32_t consecutive_failures = 0;
+    uint32_t total_failed_publishes = 0;
     
     // Main loop
     while (true) {
@@ -460,6 +526,12 @@ int main() {
             
             printf("\n🔘 Button pressed: Starting image transfer (QoS %d)...\n\n", current_qos);
             
+            // Scan for image files and auto-select first
+            if (!scan_and_select_image()) {
+                printf("  ✗ No image files found. Please add .jpg/.jpeg files to SD card.\n\n");
+                continue;
+            }
+            
             printf("───────────────────────────────────────────────────────\n");
             printf("  📸 Image Transfer & Status Log Creation\n");
             printf("───────────────────────────────────────────────────────\n");
@@ -510,7 +582,7 @@ int main() {
                 "\n"
                 "IMAGE TRANSFER\n"
                 "──────────────────────────────────────────────────────\n"
-                "Source File:      download.jpg\n"
+                "Source File:      %s\n"
                 "Location:         SD Card (FAT32)\n"
                 "Topic:            pico/block\n"
                 "QoS Mode:         %d (%s)\n"
@@ -521,6 +593,7 @@ int main() {
                 "═══════════════════════════════════════════════════════\n",
                 hours, minutes, seconds, uptime,
                 uptime,
+                selected_image,
                 current_qos,
                 current_qos, (current_qos == 0) ? "Fire-and-Forget" : "Reliable with PUBACK",
                 uptime
@@ -533,11 +606,10 @@ int main() {
                 printf("  ✗ Failed to save status log\n");
             }
             
-            const char *image_file = "download.jpg";
-            printf("\n  → Looking for %s on SD card...\n", image_file);
+            printf("\n  → Transferring: %s\n", selected_image);
             
             // Send image with current QoS setting
-            if (send_image_file_qos("pico/block", image_file, current_qos) == 0) {
+            if (send_image_file_qos("pico/block", selected_image, current_qos) == 0) {
                 printf("\n  ✓ Image transfer completed (QoS %d)\n", current_qos);
                 
                 // Update log with completion status
@@ -598,18 +670,109 @@ int main() {
         }
         
         // ═══════════════════════════════════════════════════════
-        // QoS 1 Mode: Publish sequence messages every 5 seconds
+        // QoS 1 Mode: Publish with retry logic and gateway-down detection
         // ═══════════════════════════════════════════════════════
         if (mqtt_connected && qos_mode == 1 && (now - last_publish > 5000)) {
             char message[64];
             snprintf(message, sizeof(message), "seq=%lu,timestamp=%lu", sequence_number, now);
-            printf("[%lu ms] Publishing QoS 1: seq=%lu (waiting for PUBACK...)\n", now, sequence_number);
+            printf("\n[%lu ms] 📨 Publishing QoS 1: seq=%lu (waiting for PUBACK...)\n", now, sequence_number);
+            printf("         ⏱️  Pico will process incoming messages during wait...\n");
             
-            int ret = mqttsn_publish("pico/data", (uint8_t*)message, strlen(message), 1);
-            if (ret == MQTTSN_OK) {
-                printf("         ✓ PUBACK received for seq=%lu\n", sequence_number);
-            } else {
-                printf("         ✗ PUBACK timeout for seq=%lu\n", sequence_number);
+            bool publish_success = false;
+            int max_retries = 3;
+            uint32_t retry_delays[] = {2000, 4000, 8000};  // Exponential backoff: 2s, 4s, 8s
+            
+            for (int attempt = 0; attempt < max_retries; attempt++) {
+                int ret = mqttsn_publish("pico/data", (uint8_t*)message, strlen(message), 1);
+                
+                if (ret == MQTTSN_OK) {
+                    printf("         ✅ PUBACK received for seq=%lu", sequence_number);
+                    if (attempt > 0) {
+                        printf(" (succeeded on retry %d)", attempt);
+                    }
+                    printf("\n");
+                    
+                    publish_success = true;
+                    consecutive_failures = 0;  // Reset on success
+                    break;
+                } else {
+                    // Publish failed
+                    if (attempt < max_retries - 1) {
+                        // Not last attempt - retry with backoff
+                        printf("         ✗ PUBACK timeout for seq=%lu (attempt %d/%d)\n", 
+                               sequence_number, attempt + 1, max_retries);
+                        printf("         ⏳ Retrying in %lu ms...\n", retry_delays[attempt]);
+                        
+                        // Wait with polling to keep system responsive
+                        uint32_t retry_start = to_ms_since_boot(get_absolute_time());
+                        while (to_ms_since_boot(get_absolute_time()) - retry_start < retry_delays[attempt]) {
+                            if (mqtt_connected) {
+                                mqttsn_poll();
+                            }
+                            if (wifi_initialized) {
+                                cyw43_arch_poll();
+                            }
+                            sleep_ms(10);
+                        }
+                    } else {
+                        // Last attempt failed
+                        printf("         ✗ PUBACK timeout for seq=%lu (all %d attempts failed)\n", 
+                               sequence_number, max_retries);
+                    }
+                }
+            }
+            
+            if (!publish_success) {
+                // All retries failed - likely gateway is down
+                consecutive_failures++;
+                total_failed_publishes++;
+                
+                printf("         ⚠️  Publish failed after %d retries (consecutive failures: %lu, total: %lu)\n", 
+                       max_retries, consecutive_failures, total_failed_publishes);
+                
+                // Check if gateway appears to be down (5 consecutive failures)
+                if (consecutive_failures >= 5) {
+                    printf("\n");
+                    printf("═══════════════════════════════════════════════════════\n");
+                    printf("  ⚠️  GATEWAY DOWN DETECTED\n");
+                    printf("═══════════════════════════════════════════════════════\n");
+                    printf("  %lu consecutive publish failures detected.\n", consecutive_failures);
+                    printf("  Gateway may be offline or unreachable.\n");
+                    printf("  Attempting to reconnect...\n\n");
+                    
+                    // Disconnect and attempt reconnection
+                    mqtt_connected = false;
+                    consecutive_failures = 0;  // Reset for fresh start
+                    
+                    printf("  → Reconnecting to MQTT-SN gateway...\n");
+                    sleep_ms(1000);
+                    
+                    const char *gateway_ip = "172.20.10.14";
+                    uint16_t gateway_port = 1884;
+                    
+                    if (mqttsn_init(gateway_ip, gateway_port) != MQTTSN_OK) {
+                        printf("  ✗ MQTT-SN init failed\n");
+                    } else {
+                        int ret = mqttsn_connect("PicoW_Client", 60);
+                        if (ret != MQTTSN_OK) {
+                            printf("  ✗ Reconnection failed (will retry later)\n");
+                        } else {
+                            printf("  ✓ Reconnected successfully!\n");
+                            
+                            // Re-subscribe to topics
+                            mqttsn_set_message_callback(on_message_received);
+                            mqttsn_subscribe("pico/test", 0);
+                            mqttsn_subscribe("pico/command", 0);
+                            mqttsn_subscribe("pico/chunks", 0);
+                            mqttsn_subscribe("pico/block", 0);
+                            printf("  ✓ Resubscribed to topics\n");
+                            
+                            mqtt_connected = true;
+                        }
+                    }
+                    
+                    printf("═══════════════════════════════════════════════════════\n\n");
+                }
             }
             
             sequence_number++;
