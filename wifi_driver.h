@@ -1,7 +1,7 @@
-// wifi.h - Simple WiFi reconnection without scanning
+// wifi_driver.h - Simple WiFi reconnection without scanning
 
-#ifndef WIFI_H
-#define WIFI_H
+#ifndef WIFI_DRIVER_H
+#define WIFI_DRIVER_H
 
 #include <stddef.h>
 #include <stdbool.h>
@@ -49,4 +49,4 @@ int wifi_reset(void);
 // Get signal strength in dBm
 int wifi_get_rssi(void);
 
-#endif // WIFI_H
+#endif // WIFI_DRIVER_H

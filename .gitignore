@@ -1,5 +1,5 @@
 # Ignore everything under build/
-**/build/**
+build
 
 # BUT keep the final binaries we care about
 !**/build/*.uf2
@@ -8,4 +8,4 @@
 **/.vscode/**
 
 # Ignore secrets
-**/wifi_config.h
+**/network_config.h

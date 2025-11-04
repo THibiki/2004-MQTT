@@ -4,7 +4,7 @@
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
 
-#include "wifi.h"
+#include "wifi_driver.h"
 #include "network_errors.h"
 
 static simple_wifi_t wifi_state = {0};
@@ -192,23 +192,6 @@ int wifi_print_network_info(void) {
     
     return WIFI_OK;
 }
-
-// int wifi_reset(void) {
-//     if (udp_pcb != NULL) {
-//         udp_remove(udp_pcb);
-//         udp_pcb = NULL;
-//     }
-
-//     wifi_state.connected = false;
-
-//     if (wifi_state.initialized) {
-//         cyw43_arch_deinit();
-//         wifi_state.initialized = false;
-//     }
-
-//     // Re-initialize
-//     return wifi_init(WIFI_SSID, WIFI_PASSWORD);
-// }
 
 int wifi_get_rssi(void) {
     // Treat all failures here as not connected
