@@ -9,3 +9,4 @@ build
 
 # Ignore secrets
 **/network_config.h
+network_config_base.h
