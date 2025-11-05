@@ -5,7 +5,7 @@
 
 // Create UDP socket and bind to local port
 int wifi_udp_create(uint16_t local_port);
-// Sned UDP packet
+// Send UDP packet
 int wifi_udp_send(const char *dest_ip, uint16_t dest_port, const uint8_t *data, size_t len);
 // Receive UDP packet with timeout (ms). 0 = non-blocking
 int wifi_udp_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_ms);

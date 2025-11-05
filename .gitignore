@@ -14,3 +14,5 @@ network_config_base.h
 
 # Ignore cloned Paho MQTT-SN repository
 paho.mqtt-sn.embedded-c/
+paho.mqtt-sn.embedded-c
+paho.mqtt-sn.embedded-c

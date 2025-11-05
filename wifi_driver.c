@@ -79,7 +79,7 @@ int wifi_get_network_info(wifi_network_info_t *info) {
         return WIFI_ENONETIF;
     }
     
-    ip4_addr_t *netif_ip = netif_ip4_addr(netif);
+    const ip4_addr_t *netif_ip = netif_ip4_addr(netif);
     
     if (ip4_addr_isany(netif_ip)) {
         printf("[ERROR] No valid IP address assigned\n");
@@ -164,7 +164,7 @@ void wifi_print_stats(void) {
     if (wifi_state.connected) {
         wifi_network_info_t net_info;
         if (wifi_get_network_info(&net_info) == WIFI_OK) {
-            printf("IP: %s\n", ip4addr_ntoa(&net_info.gateway));
+            printf("IP: %s\n", ip4addr_ntoa(&net_info.ip));
         }
     }
 }
@@ -178,7 +178,7 @@ int wifi_print_network_info(void) {
         return WIFI_ENONETIF;
     }
     
-    ip4_addr_t *ip = netif_ip4_addr(netif);
+    const ip4_addr_t *ip = netif_ip4_addr(netif);
     
     if (ip4_addr_isany(ip)) {
         printf("[ERROR] No valid IP address assigned\n");
