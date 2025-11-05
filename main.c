@@ -29,6 +29,7 @@ int main(){
     // Main Loop
     bool was_connected = wifi_is_connected();   //
     absolute_time_t last_status_print = get_absolute_time();
+    absolute_time_t last_waiting_print = get_absolute_time();
 
     while (true){
         uint32_t now = to_ms_since_boot(get_absolute_time());
@@ -63,9 +64,12 @@ int main(){
             cyw43_arch_poll();
 
         } else {
-            // Wait for WiFi Connection
-            printf("[APP] Waiting for WiFi... (Status: %s)\n", 
+            // Wait for WiFi Connection - only print every 5 seconds
+            if (absolute_time_diff_us(last_waiting_print, get_absolute_time()) > 5000000) {
+                printf("[APP] Waiting for WiFi... (Status: %s)\n", 
                        wifi_get_status());
+                last_waiting_print = get_absolute_time();
+            }
         }
 
         // Print WiFi stats every 60 seconds

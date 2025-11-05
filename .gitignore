@@ -1,5 +1,6 @@
 # Ignore everything under build/
 build
+.cursor
 
 # BUT keep the final binaries we care about
 !**/build/*.uf2
