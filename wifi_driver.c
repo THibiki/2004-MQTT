@@ -44,7 +44,6 @@ bool wifi_is_connected(void) {
     // Detect disconnection
     if (wifi_state.connected && !currently_connected) {
         printf("\n[WARNING]: WiFi disconnected!\n");
-        printf("[DEBUG] Link status changed to: %s\n", wifi_get_status());
         wifi_state.connected = false;
         wifi_state.disconnect_count++;
     }
