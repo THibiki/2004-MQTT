@@ -1,0 +1,17 @@
+// mqttsn_client_example.h
+#ifndef MQTTSN_CLIENT_EXAMPLE_H
+#define MQTTSN_CLIENT_EXAMPLE_H
+
+#include <stdint.h>
+
+int mqttsn_demo_init(uint16_t local_port);
+int mqttsn_demo_send_test(const char *payload);
+int mqttsn_demo_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_ms);
+void mqttsn_demo_close(void);
+
+// Paho-enabled helpers
+int mqttsn_demo_subscribe(const char *topicname, unsigned short packetid, unsigned short *out_topicid);
+int mqttsn_demo_publish_name(const char *topicname, const uint8_t *payload, int payloadlen);
+int mqttsn_demo_process_once(uint32_t timeout_ms);
+
+#endif // MQTTSN_CLIENT_EXAMPLE_H

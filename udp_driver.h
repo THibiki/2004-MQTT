@@ -2,6 +2,7 @@
 
 #ifndef UDP_DRIVER_H
 #define UDP_DRIVER_H
+#include <stdbool.h>
 
 // Create UDP socket and bind to local port
 int wifi_udp_create(uint16_t local_port);

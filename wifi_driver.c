@@ -22,7 +22,9 @@ int wifi_init(const char *ssid, const char *password) {
     
     // Store credentials
     strncpy(wifi_state.ssid, ssid, sizeof(wifi_state.ssid) - 1);
+    wifi_state.ssid[sizeof(wifi_state.ssid) - 1] = '\0';
     strncpy(wifi_state.password, password, sizeof(wifi_state.password) - 1);
+    wifi_state.password[sizeof(wifi_state.password) - 1] = '\0';
     wifi_state.initialized = true;
     wifi_state.connected = false;
     wifi_state.last_check_time = get_absolute_time();
@@ -100,7 +102,16 @@ int wifi_get_network_info(wifi_network_info_t *info) {
 // Connect to WiFi and get IP from DHCP pool (blocking)
 int wifi_connect(void) {
     printf("[INFO] Connecting to: %s\n", wifi_state.ssid);
-    
+    // Debug: print masked password info to help diagnose "Bad Password" auth
+    size_t pwdlen = strlen(wifi_state.password);
+    if (pwdlen > 0) {
+        char first = wifi_state.password[0];
+        char last = wifi_state.password[pwdlen - 1];
+        printf("[DEBUG] Password length=%zu, first='%c', last='%c'\n", pwdlen, first, last);
+    } else {
+        printf("[DEBUG] Password length=0\n");
+    }
+
     int result = cyw43_arch_wifi_connect_timeout_ms(
         wifi_state.ssid, 
         wifi_state.password, 
@@ -117,7 +128,12 @@ int wifi_connect(void) {
         
         return 0;
     } else {
+        /* Extra debug information: print the raw cyw43 return and link status
+         * This helps distinguish authentication failures from other errors
+         * (e.g. wrong auth mode, AP rejecting association, or driver errors). */
+        int link_status = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
         printf("[INFO] WiFi Connection failed: %d\n", result);
+        printf("   Link status (numeric): %d\n", link_status);
         printf("   Status: %s\n", wifi_get_status());
         wifi_state.connected = false;
         return WIFI_ENOTCONN;
