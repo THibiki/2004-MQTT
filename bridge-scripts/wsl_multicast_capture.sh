@@ -25,3 +25,5 @@ fi
 # Capture multicast and forward to Windows
 socat UDP4-RECVFROM:$MULTICAST_PORT,ip-add-membership=$MULTICAST_IP:0.0.0.0,reuseaddr,fork UDP4-SENDTO:$WINDOWS_IP:$WINDOWS_PORT
 
+
+
