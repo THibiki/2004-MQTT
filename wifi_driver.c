@@ -82,15 +82,8 @@ int wifi_get_network_info(wifi_network_info_t *info) {
         return WIFI_ENONETIF;
     }
     
-    ip4_addr_t *netif_ip = netif_ip4_addr(netif);
-    
-    if (ip4_addr_isany(netif_ip)) {
-        printf("[ERROR] No valid IP address assigned\n");
-        return WIFI_ENOIP;
-    }
-    
-    // Copy all network info
-    ip4_addr_copy(info->ip, *netif_ip);
+    // Fix: Use the correct way to get IP addresses
+    ip4_addr_copy(info->ip, *netif_ip4_addr(netif));
     ip4_addr_copy(info->netmask, *netif_ip4_netmask(netif));
     ip4_addr_copy(info->gateway, *netif_ip4_gw(netif));
     
@@ -195,14 +188,7 @@ int wifi_print_network_info(void) {
         return WIFI_ENONETIF;
     }
     
-    ip4_addr_t *ip = netif_ip4_addr(netif);
-    
-    if (ip4_addr_isany(ip)) {
-        printf("[ERROR] No valid IP address assigned\n");
-        return WIFI_ENOIP;
-    }
-    
-    printf("   IP Address: %s\n", ip4addr_ntoa(ip));
+    printf("   IP Address: %s\n", ip4addr_ntoa(netif_ip4_addr(netif)));
     printf("   Netmask: %s\n", ip4addr_ntoa(netif_ip4_netmask(netif)));
     printf("   Gateway: %s\n", ip4addr_ntoa(netif_ip4_gw(netif)));
     

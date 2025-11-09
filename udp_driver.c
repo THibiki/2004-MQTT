@@ -55,7 +55,7 @@ int wifi_udp_create(uint16_t local_port){
         return WIFI_ENOMEM; // memory allocation failed
     }
 
-    // Blind to local port
+    // Bind to local port
     err_t err = udp_bind(udp_pcb, IP_ADDR_ANY, local_port);
     if (err != ERR_OK){
         printf("[ERROR] Failed to blind UDP PCB to port %d (Error: %d)\n", local_port, err);
@@ -143,6 +143,7 @@ int wifi_udp_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_ms) {
 
     if (buffer == NULL || max_len == 0){
         printf("[UDP] Received failed: Invalid Buffer\n");
+        return WIFI_EINVAL;
     }
 
     // Set up receive buffer
@@ -175,7 +176,7 @@ int wifi_udp_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_ms) {
             }
             
             // Sleep for 1ms to yield CPU and avoid spinning too fast
-            sleep_ms(1);
+            sleep_ms(10);
         }
     }
 

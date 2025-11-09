@@ -6,6 +6,9 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include "lwip/ip4_addr.h"
+#include "lwip/ip_addr.h"
+
 
 // Configuration
 #define RECONNECT_CHECK_INTERVAL_MS 5000   // Check connection every 5 seconds

@@ -1,6 +1,4 @@
-// mqttsn_adapter.c
-// Simple transport adapter that maps MQTT-SN transport calls to the existing UDP driver
-
+// mqttsn_adapter.c - SIMPLE VERSION
 #include "mqttsn_adapter.h"
 #include "udp_driver.h"
 #include <stdio.h>

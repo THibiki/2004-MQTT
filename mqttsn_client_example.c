@@ -19,7 +19,7 @@
 
 // Configure these for your gateway (edit as needed)
 #ifndef MQTTSN_GATEWAY_IP
-#define MQTTSN_GATEWAY_IP "192.168.4.1"
+#define MQTTSN_GATEWAY_IP "172.20.10.7"
 #endif
 #ifndef MQTTSN_GATEWAY_PORT
 #define MQTTSN_GATEWAY_PORT 1885
@@ -69,6 +69,12 @@ int mqttsn_demo_init(uint16_t local_port){
             }
         }
     }
+    printf("[DEBUG] CONNECT packet bytes:\n");
+    for(int i = 0; i < len; i++) {
+        printf("%02x ", buf[i]);
+        if ((i+1) % 16 == 0) printf("\n");
+    }
+printf("\n");
 #else
     printf("[MQTTSN] Paho not available at build time; example will send a demo datagram instead.\n");
 #endif
