@@ -39,7 +39,7 @@ add_executable(picow_network
   wifi_driver.c
   udp_driver.c
   mqttsn_adapter.c
-  mqttsn_client_example.c
+  mqttsn_client.c
 )
 
 pico_enable_stdio_usb(picow_network 1)

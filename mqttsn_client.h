@@ -1,6 +1,6 @@
-// mqttsn_client_example.h
-#ifndef MQTTSN_CLIENT_EXAMPLE_H
-#define MQTTSN_CLIENT_EXAMPLE_H
+// mqttsn_client.h
+#ifndef MQTTSN_CLIENT_H
+#define MQTTSN_CLIENT_H
 
 #include <stdint.h>
 
@@ -14,4 +14,8 @@ int mqttsn_demo_subscribe(const char *topicname, unsigned short packetid, unsign
 int mqttsn_demo_publish_name(const char *topicname, const uint8_t *payload, int payloadlen);
 int mqttsn_demo_process_once(uint32_t timeout_ms);
 
-#endif // MQTTSN_CLIENT_EXAMPLE_H
+// QoS management
+int mqttsn_get_qos(void);
+void mqttsn_set_qos(int qos);
+
+#endif // MQTTSN_CLIENT_H
