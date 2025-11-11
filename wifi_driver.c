@@ -174,7 +174,7 @@ void wifi_print_stats(void) {
     if (wifi_state.connected) {
         wifi_network_info_t net_info;
         if (wifi_get_network_info(&net_info) == WIFI_OK) {
-            printf("IP: %s\n", ip4addr_ntoa(&net_info));
+            printf("IP: %s\n", ip4addr_ntoa(&net_info.ip));
         }
     }
 }
