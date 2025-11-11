@@ -1,21 +1,28 @@
 #include <stdio.h>
 #include <string.h>
 
+// Pico SDK header files
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
 #include "lwip/ip_addr.h"
+#include "hardware/gpio.h"
+#include "ff.h"
 
+// Custom header files
 #include "network_config.h"
 #include "wifi_driver.h"
 #include "udp_driver.h"
 #include "network_errors.h"
 #include "mqttsn_client.h"
-#include "hardware/gpio.h"
+#include "block_transfer.h"
+#include "sd_card.h"
 
 #define QOS_TOGGLE 22  // GP22
+#define BLOCK_TRANSFER 21  // GP22
 
 // Button debouncing
 static volatile uint32_t last_button_press = 0;
+static uint32_t last_block_transfer_button_press = 0;
 static const uint32_t DEBOUNCE_MS = 300;
 
 // GPIO interrupt handler for button
@@ -38,6 +45,76 @@ void gpio_callback(uint gpio, uint32_t events) {
     }
 }
 
+// init SD + block transfer
+static bool app_init_sd_card_once(void){
+    static bool initialised = false;
+
+    if (initialised) {
+        return true;
+    }
+
+    printf("[SD] Initialising SD card...\n");
+    if(sd_card_init_with_detection() != 0){
+        printf("[SD] SD card hardware initialisation failed.\n");
+        return false;
+    }
+
+    if (sd_card_mount_fat32() != 0){
+        printf("[SD] FAT32 mount failed.\n");
+        return false;
+    }
+    
+    printf("[SD] SD card initalised and FAT32 mounted!\n");
+    initialised = true;
+    return true;
+}
+
+// Simple poll-based check for GP21
+static bool block_transfer_button_pressed(void){
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    if (gpio_get(BLOCK_TRANSFER) == 0){
+        if (now - last_block_transfer_button_press > DEBOUNCE_MS) {
+            last_block_transfer_button_press = now;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void app_start_block_transfer(void){
+    if (!app_init_sd_card_once()) {
+        printf("[APP] Cannot start image transfer: SD initialisation failed\n");
+        return;
+    }
+
+    const char *filename = "download.jpg";
+    const char *topic = "pico/block";
+    int qos = mqttsn_get_qos();
+
+    printf("\n[APP] Block transfer requested (file='%s', topic='%s', QoS='%d')\n", filename, topic, qos);
+
+    int rc = send_image_file_qos(topic, filename, (uint8_t)qos);
+    if (rc == 0){
+        printf("[APP] Block Transfer completed successfully\n");
+    } else {
+        printf("[APP] Block Transfer failed (rc=%d)\n", rc);
+    }
+}
+
+void buttons_init() {
+
+    gpio_init(BLOCK_TRANSFER);
+    gpio_set_dir(BLOCK_TRANSFER, GPIO_IN);
+    gpio_pull_up(BLOCK_TRANSFER);  // Enable pull-up (button connects to GND)
+
+    gpio_init(QOS_TOGGLE);
+    gpio_set_dir(QOS_TOGGLE, GPIO_IN);
+    gpio_pull_up(QOS_TOGGLE);  // Enable pull-up (button connects to GND)
+
+    // Enable interrupt on falling edge (button press)
+    gpio_set_irq_enabled_with_callback(QOS_TOGGLE, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
+}
+
 int main(){
     stdio_init_all();
     sleep_ms(3000); // Provide time for serial monitor to connect
@@ -45,14 +122,9 @@ int main(){
     printf("\n=== MQTT-SN Pico W Client Starting ===\n");
 
     // ========================= Button Setup =========================
-    gpio_init(QOS_TOGGLE);
-    gpio_set_dir(QOS_TOGGLE, GPIO_IN);
-    gpio_pull_up(QOS_TOGGLE);  // Enable pull-up (button connects to GND)
+    buttons_init();
     
-    // Enable interrupt on falling edge (button press)
-    gpio_set_irq_enabled_with_callback(QOS_TOGGLE, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
-    
-    printf("[BUTTON] GP22 configured for QoS toggle (pull-up enabled)\n");
+    printf("[BUTTON] GP22 configured for QoS toggle (pull-up enabled), GP21: Block transfer\n");
     printf("[INFO] Press button to cycle: QoS 0 -> QoS 1 -> QoS 2 -> QoS 0\n");
 
     // ========================= WiFi Init =========================
@@ -66,6 +138,8 @@ int main(){
     }
 
     sleep_ms(2000);
+
+    block_transfer_init();
 
     // Main Loop
     bool was_connected = wifi_is_connected();
@@ -154,6 +228,11 @@ int main(){
                         mqttsn_demo_close();
                     }
                     last_publish = now_ms;
+                }
+
+                if (block_transfer_button_pressed()) {
+                    printf("[BUTTON] Block Transfer button pressed.\n");
+                    app_start_block_transfer();
                 }
             }
 
