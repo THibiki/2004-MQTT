@@ -87,17 +87,28 @@ static void app_start_block_transfer(void){
         return;
     }
 
-    const char *filename = "download.jpg";
-    const char *topic = "pico/block";
+    // Scan SD card for image files and get the first one
+    printf("\n[APP] Scanning SD card for images...\n");
+    const char *filename = sd_card_get_first_image();
+    
+    if (filename == NULL) {
+        printf("[APP] ✗ No image files found on SD card\n");
+        printf("[APP] Please add a .jpg or .jpeg file to the SD card\n");
+        return;
+    }
+    
+    const char *topic = "pico/chunks";  // Send to pico/chunks for receiver to save to repo
     int qos = mqttsn_get_qos();
 
     printf("\n[APP] Block transfer requested (file='%s', topic='%s', QoS='%d')\n", filename, topic, qos);
+    printf("[APP] Sending image from SD card to GitHub repo...\n");
 
     int rc = send_image_file_qos(topic, filename, (uint8_t)qos);
     if (rc == 0){
-        printf("[APP] Block Transfer completed successfully\n");
+        printf("[APP] ✓ Block Transfer completed successfully\n");
+        printf("[APP] Image '%s' sent to GitHub repo\n", filename);
     } else {
-        printf("[APP] Block Transfer failed (rc=%d)\n", rc);
+        printf("[APP] ✗ Block Transfer failed (rc=%d)\n", rc);
     }
 }
 

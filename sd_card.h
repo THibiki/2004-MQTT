@@ -9,6 +9,7 @@ void wait_for_sd_card();
 bool initialize_sd_card();
 bool check_sd_card_status();
 bool scan_and_select_image();
+const char* sd_card_get_first_image(void);  // Get first image filename from scan
 
 // SD card function prototypes
 void sd_card_deinit(void);

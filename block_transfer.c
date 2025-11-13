@@ -1,9 +1,11 @@
 #include "block_transfer.h"
 #include "mqttsn_client.h"
 #include "sd_card.h"
+#include "ff.h"  // FatFs library for directory operations
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 
 // Global variables for block transfer
@@ -11,13 +13,19 @@ static block_assembly_t current_block = {0};
 static uint16_t next_block_id = 1;
 
 // map current calls of mqttsn_publish() to new mqttsn publish call method (mqttsn_demo_publish_name)
+// This function respects the QoS parameter by temporarily setting current_qos
 static int mqttsn_publish(const char *topic, const uint8_t *data, size_t len, uint8_t qos){
-
-    // Note: current mqttsn_demo implementation only publishes on a registered topic ID
-    // will need to extend it to register "pico/block" and "pico/chunks" also
-    // Currently, this is just to reuse the same API and it ignore per-message QoS arguments
-
-    return (mqttsn_demo_publish_name(topic, data, (int)len) == 0) ? MQTTSN_OK : MQTTSN_ERROR ;
+    // Save current QoS and set to requested QoS
+    int saved_qos = mqttsn_get_qos();
+    mqttsn_set_qos(qos);
+    
+    // Publish with the requested QoS
+    int result = (mqttsn_demo_publish_name(topic, data, (int)len) == 0) ? MQTTSN_OK : MQTTSN_ERROR;
+    
+    // Restore original QoS
+    mqttsn_set_qos(saved_qos);
+    
+    return result;
 }
 
 int block_transfer_init(void) {
@@ -185,13 +193,39 @@ int send_block_transfer_qos(const char *topic, const uint8_t *data, size_t data_
                 printf("Failed to send chunk %d/%d after %d attempts\n", part, total_parts, max_retries);
                 return -1;
             }
-        } else {
-            // QoS 0 - fire and forget
-            ret = mqttsn_publish(topic, packet, packet_size, 0);
+        } else if (qos == 2) {
+            // QoS 2 - will wait for PUBREC/PUBREL/PUBCOMP handshake, retry if timeout
+            int max_retries = 3;
+            ret = MQTTSN_ERROR;
+            
+            for (int attempt = 1; attempt <= max_retries; attempt++) {
+                ret = mqttsn_publish(topic, packet, packet_size, 2);
+                
+                if (ret == MQTTSN_OK) {
+                    break; // Success - PUBREC/PUBREL/PUBCOMP completed
+                } else if (attempt < max_retries) {
+                    printf("  Retry %d/%d for chunk %d (QoS 2 handshake failed)\n", attempt, max_retries, part);
+                    sleep_ms(100); // Small delay before retry
+                }
+            }
+            
             if (ret != MQTTSN_OK) {
-                printf("Failed to send chunk %d/%d\n", part, total_parts);
+                printf("Failed to send chunk %d/%d after %d attempts (QoS 2)\n", part, total_parts, max_retries);
                 return -1;
             }
+        } else if (qos == 0) {
+            // QoS 0 - fire and forget (no acknowledgment, may lose packets)
+            ret = mqttsn_publish(topic, packet, packet_size, 0);
+            if (ret != MQTTSN_OK) {
+                printf("Failed to send chunk %d/%d (QoS 0)\n", part, total_parts);
+                return -1;
+            }
+            // Note: QoS 0 returns success immediately after UDP send
+            // This does NOT guarantee the packet was received by the gateway
+        } else {
+            // Invalid QoS level
+            printf("Error: Invalid QoS level %d (must be 0, 1, or 2)\n", qos);
+            return -1;
         }
         
         // Print progress every 10 chunks
@@ -214,27 +248,86 @@ int send_image_file(const char *topic, const char *filename) {
 }
 
 // Send an image file from SD card using block transfer with configurable QoS
+// This sends images from SD card to GitHub repo via MQTT-SN
 int send_image_file_qos(const char *topic, const char *filename, uint8_t qos) {
-    printf("\n=== Starting image file transfer (QoS %d) ===\n", qos);
-    printf("File: %s\n", filename);
+    printf("\n=== Sending image from SD card to GitHub repo (QoS %d) ===\n", qos);
+    printf("📁 Reading from SD card: %s\n", filename);
     
-    // Read image file from SD card
-    uint8_t *image_buffer = malloc(BLOCK_BUFFER_SIZE);
-    if (!image_buffer) {
-        printf("Error: Failed to allocate image buffer\n");
+    // Check if SD card is mounted
+    if (!sd_card_is_mounted()) {
+        printf("❌ Error: SD card not mounted\n");
         return -1;
     }
     
+    // First, get the file size to allocate the right buffer size
+    FIL file;
+    FRESULT res = f_open(&file, filename, FA_READ);
+    if (res != FR_OK) {
+        printf("❌ Error: Failed to open file '%s' (error %d)\n", filename, res);
+        return -1;
+    }
+    
+    // Get file size
+    FSIZE_t file_size_fs = f_size(&file);
+    f_close(&file);
+    
+    // Convert FSIZE_t to size_t (handle both 32-bit and 64-bit)
+    size_t file_size = (size_t)file_size_fs;
+    
+    if (file_size == 0) {
+        printf("❌ Error: File '%s' is empty\n", filename);
+        return -1;
+    }
+    
+    printf("📊 File size: %zu bytes (%.2f MB)\n", file_size, file_size / (1024.0 * 1024.0));
+    
+    // Reject files that are too large for Pico W's limited RAM
+    if (file_size > MAX_SUPPORTED_FILE_SIZE) {
+        printf("❌ Error: File too large!\n");
+        printf("   File size: %zu bytes (%.2f MB)\n", file_size, file_size / (1024.0 * 1024.0));
+        printf("   Maximum supported: %d bytes (%.2f MB)\n", 
+               MAX_SUPPORTED_FILE_SIZE, MAX_SUPPORTED_FILE_SIZE / (1024.0 * 1024.0));
+        printf("   Pico W has limited RAM (~264KB total)\n");
+        printf("   Please use a smaller image file (under %.2f MB)\n", 
+               MAX_SUPPORTED_FILE_SIZE / (1024.0 * 1024.0));
+        return -1;
+    }
+    
+    if (file_size > BLOCK_BUFFER_SIZE) {
+        printf("⚠️  Warning: File size (%zu bytes, %.2f MB) exceeds buffer size (%d bytes, %.2f MB)\n", 
+               file_size, file_size / (1024.0 * 1024.0), 
+               BLOCK_BUFFER_SIZE, BLOCK_BUFFER_SIZE / (1024.0 * 1024.0));
+        printf("   File will be truncated to %d bytes\n", BLOCK_BUFFER_SIZE);
+    }
+    
+    // Allocate buffer (use file size or buffer size, whichever is smaller)
+    size_t buffer_size = (file_size > BLOCK_BUFFER_SIZE) ? BLOCK_BUFFER_SIZE : file_size;
+    
+    printf("💾 Allocating buffer: %zu bytes (%.2f MB)...\n", buffer_size, buffer_size / (1024.0 * 1024.0));
+    
+    uint8_t *image_buffer = malloc(buffer_size);
+    if (!image_buffer) {
+        printf("❌ Error: Failed to allocate image buffer (%zu bytes, %.2f MB)\n", 
+               buffer_size, buffer_size / (1024.0 * 1024.0));
+        printf("   Out of memory! Pico W has limited RAM (~264KB total)\n");
+        printf("   Try using a smaller image file\n");
+        return -1;
+    }
+    
+    printf("✅ Buffer allocated successfully\n");
+    
     size_t image_size = 0;
-    int ret = sd_card_read_file(filename, image_buffer, BLOCK_BUFFER_SIZE, &image_size);
+    int ret = sd_card_read_file(filename, image_buffer, buffer_size, &image_size);
     
     if (ret != 0) {
-        printf("Error: Failed to read image file '%s'\n", filename);
+        printf("❌ Error: Failed to read image file '%s' from SD card\n", filename);
         free(image_buffer);
         return -1;
     }
     
-    printf("Image loaded: %zu bytes\n", image_size);
+    printf("✅ Image loaded from SD card: %zu bytes (%.2f MB)\n", 
+           image_size, image_size / (1024.0 * 1024.0));
+    printf("📤 Sending to topic '%s' (will be saved to repo/received/)\n", topic);
     
     // Send via block transfer with specified QoS
     ret = send_block_transfer_qos(topic, image_buffer, image_size, qos);
@@ -242,9 +335,9 @@ int send_image_file_qos(const char *topic, const char *filename, uint8_t qos) {
     free(image_buffer);
     
     if (ret == 0) {
-        printf("Image transfer completed successfully\n");
+        printf("✅ Image transfer completed - saved to GitHub repo\n");
     } else {
-        printf("Image transfer failed\n");
+        printf("❌ Image transfer failed\n");
     }
     
     return ret;
@@ -344,32 +437,86 @@ void process_block_chunk(const uint8_t *data, size_t len) {
             printf("%.*s", current_block.total_length, current_block.data_buffer);
             printf("\n--- END MESSAGE ---\n");
             
-            // Save received block to SD card
-            if (sd_card_is_mounted()) {
-                char received_filename[64];
-                snprintf(received_filename, sizeof(received_filename), 
-                        "received/block_%d_%lu.txt", 
-                        current_block.block_id, 
-                        to_ms_since_boot(get_absolute_time()) / 1000);
+            // Detect file type from data signature
+            const char *file_ext = ".bin";  // Default extension
+            if (current_block.total_length >= 2) {
+                uint8_t byte0 = current_block.data_buffer[0];
+                uint8_t byte1 = current_block.data_buffer[1];
                 
-                // Create received directory if it doesn't exist (simulated - just a note)
-                printf("Saving to simulated 'received' directory\n");
-                
-                if (sd_card_save_block(received_filename, current_block.data_buffer, current_block.total_length) == 0) {
-                    printf("Block saved to SD card: %s\n", received_filename);
-                } else {
-                    printf("Failed to save block to SD card\n");
+                // JPEG: FF D8
+                if (byte0 == 0xFF && byte1 == 0xD8) {
+                    file_ext = ".jpg";
+                }
+                // PNG: 89 50 4E 47
+                else if (byte0 == 0x89 && byte1 == 0x50 && 
+                         current_block.total_length >= 4 &&
+                         current_block.data_buffer[2] == 0x4E && 
+                         current_block.data_buffer[3] == 0x47) {
+                    file_ext = ".png";
+                }
+                // GIF: 47 49 46 38
+                else if (byte0 == 0x47 && byte1 == 0x49 &&
+                         current_block.total_length >= 4 &&
+                         current_block.data_buffer[2] == 0x46 &&
+                         current_block.data_buffer[3] == 0x38) {
+                    file_ext = ".gif";
                 }
             }
             
+            // Save received block to SD card
+            if (sd_card_is_mounted()) {
+                // Create received directory if it doesn't exist
+                DIR dir;
+                FRESULT dir_res = f_opendir(&dir, "received");
+                if (dir_res == FR_NO_PATH || dir_res == FR_NO_FILE) {
+                    // Directory doesn't exist, create it
+                    dir_res = f_mkdir("received");
+                    if (dir_res == FR_OK) {
+                        printf("📁 Created 'received' directory\n");
+                    } else if (dir_res == FR_EXIST) {
+                        printf("📁 Directory 'received' already exists\n");
+                    } else {
+                        printf("⚠️  Failed to create 'received' directory (error %d)\n", dir_res);
+                    }
+                } else if (dir_res == FR_OK) {
+                    // Directory exists, close the handle
+                    f_closedir(&dir);
+                    printf("📁 Using existing 'received' directory\n");
+                }
+                
+                // Generate filename with timestamp
+                char received_filename[64];
+                uint32_t timestamp_sec = to_ms_since_boot(get_absolute_time()) / 1000;
+                snprintf(received_filename, sizeof(received_filename), 
+                        "received/block_%d_%lu%s", 
+                        current_block.block_id, 
+                        timestamp_sec,
+                        file_ext);
+                
+                printf("💾 Saving received block to SD card: %s\n", received_filename);
+                
+                if (sd_card_save_block(received_filename, current_block.data_buffer, current_block.total_length) == 0) {
+                    printf("✅ Block saved to SD card: %s (%d bytes)\n", received_filename, current_block.total_length);
+                } else {
+                    printf("❌ Failed to save block to SD card\n");
+                }
+            } else {
+                printf("⚠️  SD card not mounted, skipping save\n");
+            }
+            
             // Publish completion notification
-            char complete_msg[100];
+            char complete_msg[150];
+            uint32_t timestamp_sec = to_ms_since_boot(get_absolute_time()) / 1000;
             snprintf(complete_msg, sizeof(complete_msg), 
-                    "BLOCK_COMPLETE: ID=%d, SIZE=%d, PARTS=%d", 
-                    current_block.block_id, current_block.total_length, current_block.total_parts);
+                    "BLOCK_RECEIVED: ID=%d, SIZE=%d, PARTS=%d, TYPE=%s, TIME=%lu", 
+                    current_block.block_id, 
+                    current_block.total_length, 
+                    current_block.total_parts,
+                    file_ext,
+                    timestamp_sec);
             
             mqttsn_publish("pico/block", (uint8_t*)complete_msg, strlen(complete_msg), 0);
-            printf("Published completion notification to 'pico/block'\n");
+            printf("📬 Published metadata to 'pico/block'\n");
             
             // Reset for next block
             current_block.block_id = 0;
