@@ -5,8 +5,9 @@
 
 // Block transfer constants
 #define BLOCK_CHUNK_SIZE 128        // Size of each chunk (adjust based on MQTT-SN packet limits)
-#define BLOCK_MAX_CHUNKS 100        // Maximum number of chunks per block
-#define BLOCK_BUFFER_SIZE 10240     // 10KB buffer for large messages
+#define BLOCK_MAX_CHUNKS 3000       // Maximum number of chunks per block (supports up to ~375KB images)
+#define BLOCK_BUFFER_SIZE 240000    // 240KB buffer - near max for Pico W's ~264KB RAM (leaves minimal room)
+#define MAX_SUPPORTED_FILE_SIZE 240000  // Maximum file size we can handle (240KB) - Pico W RAM limit
 
 // Block transfer header structure
 typedef struct {

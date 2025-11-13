@@ -1,12 +1,15 @@
 cmake_minimum_required(VERSION 3.13)
 
+# This line MUST come before the SDK import
+set(PICO_BOARD pico_w)
+
+# Now import the SDK
 include(pico_sdk_import.cmake)
 
 project(picow_network C CXX ASM)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
-set(PICO_BOARD pico_w)
 
 pico_sdk_init()
 

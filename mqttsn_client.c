@@ -20,7 +20,8 @@
 
 static bool mqttsn_initialized = false;
 static bool mqttsn_connected = false;
-static unsigned short mqttsn_registered_topicid = 0;
+static unsigned short mqttsn_registered_topicid = 0;  // For pico/test
+static unsigned short mqttsn_chunks_topicid = 0;      // For pico/chunks
 static unsigned short mqttsn_msg_id = 1;
 static int current_qos = 0;  // Default to QoS 0
 
@@ -168,6 +169,35 @@ int mqttsn_demo_init(uint16_t local_port){
     }
 
     mqttsn_msg_id++;
+    
+    // Also register pico/chunks topic for block transfers
+    printf("[MQTTSN] Registering topic 'pico/chunks' for block transfers...\n");
+    const char *chunks_topic = "pico/chunks";
+    MQTTSNString chunks_topic_string = MQTTSNString_initializer;
+    chunks_topic_string.cstring = (char*)chunks_topic;
+    chunks_topic_string.lenstring.len = strlen(chunks_topic);
+    
+    len = MQTTSNSerialize_register(buf, sizeof(buf), 0, mqttsn_msg_id, &chunks_topic_string);
+    if (len > 0) {
+        s = mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, buf, len);
+        if (s == 0) {
+            r = mqttsn_transport_receive(buf, sizeof(buf), 5000);
+            if (r > 0) {
+                unsigned short chunks_topicid = 0;
+                unsigned short chunks_msgid = 0;
+                unsigned char chunks_rc = 0;
+                if (MQTTSNDeserialize_regack(&chunks_topicid, &chunks_msgid, &chunks_rc, buf, r) == 1) {
+                    if (chunks_rc == MQTTSN_RC_ACCEPTED) {
+                        mqttsn_chunks_topicid = chunks_topicid;
+                        printf("[MQTTSN] ✓ Topic 'pico/chunks' registered (TopicID=%u)\n", chunks_topicid);
+                        mqttsn_msg_id++;
+                    } else {
+                        printf("[MQTTSN] ⚠ Topic 'pico/chunks' registration rejected (code=%d)\n", chunks_rc);
+                    }
+                }
+            }
+        }
+    }
 #else
     printf("[MQTTSN] Paho not available at build time\n");
 #endif
@@ -248,8 +278,20 @@ int mqttsn_demo_publish_name(const char *topicname, const uint8_t *payload, int 
         printf("[MQTTSN] ✗ Cannot publish - not connected\n");
         return -2;
     }
-    if (mqttsn_registered_topicid == 0) {
-        printf("[MQTTSN] ✗ Cannot publish - topic not registered\n");
+    
+    // Select appropriate topic ID based on topic name
+    unsigned short topic_id_to_use = 0;
+    if (strcmp(topicname, "pico/chunks") == 0) {
+        topic_id_to_use = mqttsn_chunks_topicid;
+    } else if (strcmp(topicname, "pico/test") == 0 || strcmp(topicname, "pico/block") == 0) {
+        topic_id_to_use = mqttsn_registered_topicid;
+    } else {
+        // Default to registered topic ID
+        topic_id_to_use = mqttsn_registered_topicid;
+    }
+    
+    if (topic_id_to_use == 0) {
+        printf("[MQTTSN] ✗ Cannot publish to '%s' - topic not registered\n", topicname);
         return -3;
     }
 
@@ -257,7 +299,7 @@ int mqttsn_demo_publish_name(const char *topicname, const uint8_t *payload, int 
     MQTTSN_topicid topic;
     
     topic.type = MQTTSN_TOPIC_TYPE_NORMAL;  
-    topic.data.id = mqttsn_registered_topicid;
+    topic.data.id = topic_id_to_use;
 
     // For QoS 0, MsgId = 0; for QoS 1 and 2, use sequential message ID
     unsigned short msgid = (current_qos == 0) ? 0 : mqttsn_msg_id;
@@ -287,8 +329,16 @@ int mqttsn_demo_publish_name(const char *topicname, const uint8_t *payload, int 
         return -5;
     }
     
-    printf("[MQTTSN] ✓ PUBLISH sent (TopicID=%u, MsgID=%u, QoS=%d, payload='%.*s')\n", 
-           mqttsn_registered_topicid, msgid, current_qos, payloadlen, payload);
+    if (current_qos == 0) {
+        // QoS 0: Fire and forget - no acknowledgment, returns success immediately
+        // WARNING: This does NOT guarantee delivery - packets may be lost
+        printf("[MQTTSN] ✓ PUBLISH sent (QoS 0, no ACK) to '%s' (TopicID=%u, len=%d)\n", 
+               topicname, topic_id_to_use, payloadlen);
+        return 0;  // QoS 0 returns immediately without waiting
+    }
+    
+    printf("[MQTTSN] ✓ PUBLISH sent to '%s' (TopicID=%u, MsgID=%u, QoS=%d, len=%d)\n", 
+           topicname, topic_id_to_use, msgid, current_qos, payloadlen);
     
     // Wait for acknowledgment for QoS 1 and 2
     if (current_qos == 1) {

@@ -46,7 +46,7 @@ static char image_files[10][64]; // Store up to 10 image filenames
 // Copied Codes
 // Scan SD card for image files and automatically select the first one found
 bool scan_and_select_image() {
-    if (!sd_card_mounted) {
+    if (!sd_card_is_mounted()) {
         printf("  ⚠ SD card not mounted\n");
         return false;
     }
@@ -101,6 +101,30 @@ bool scan_and_select_image() {
     printf("\n");
     
     return true;
+}
+
+// Get the first image filename found during scan
+const char* sd_card_get_first_image(void) {
+    // First check if SD card is mounted
+    if (!sd_card_is_mounted()) {
+        printf("  ⚠ Cannot scan: SD card not mounted\n");
+        return NULL;
+    }
+    
+    // If no scan has been done yet, scan now
+    if (image_file_count == 0) {
+        if (!scan_and_select_image()) {
+            // Scan failed
+            return NULL;
+        }
+    }
+    
+    // Return first image if available
+    if (image_file_count > 0 && image_files[0][0] != '\0') {
+        return image_files[0];
+    }
+    
+    return NULL;  // No image found
 }
 
 // Check if SD card is accessible (returns true if mounted and working)
