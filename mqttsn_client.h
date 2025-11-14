@@ -22,4 +22,8 @@ int mqttsn_demo_process_once(uint32_t timeout_ms);
 int mqttsn_get_qos(void);
 void mqttsn_set_qos(int qos);
 
+// Message callback for incoming PUBLISH messages
+typedef void (*mqttsn_message_callback_t)(unsigned short topic_id, const char *topic_name, const uint8_t *payload, int payload_len);
+void mqttsn_set_message_callback(mqttsn_message_callback_t callback);
+
 #endif // MQTTSN_CLIENT_H

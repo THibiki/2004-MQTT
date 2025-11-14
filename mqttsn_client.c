@@ -25,6 +25,18 @@ static unsigned short mqttsn_chunks_topicid = 0;      // For pico/chunks
 static unsigned short mqttsn_msg_id = 1;
 static int current_qos = 0;  // Default to QoS 0
 
+// Message callback for incoming PUBLISH
+static mqttsn_message_callback_t message_callback = NULL;
+
+// Subscribed topic tracking (for mapping topic ID to name)
+typedef struct {
+    unsigned short topic_id;
+    char topic_name[64];
+} topic_map_t;
+
+static topic_map_t subscribed_topics[10];  // Support up to 10 subscribed topics
+static int subscribed_topic_count = 0;
+
 // Get current QoS level
 int mqttsn_get_qos(void) {
     return current_qos;
@@ -38,6 +50,12 @@ void mqttsn_set_qos(int qos) {
     } else {
         printf("[MQTTSN] Invalid QoS level %d (must be 0, 1, or 2)\n", qos);
     }
+}
+
+// Set message callback for incoming PUBLISH messages
+void mqttsn_set_message_callback(mqttsn_message_callback_t callback) {
+    message_callback = callback;
+    printf("[MQTTSN] Message callback registered\n");
 }
 
 int mqttsn_demo_init(uint16_t local_port){
@@ -265,6 +283,16 @@ int mqttsn_demo_subscribe(const char *topicname, unsigned short packetid, unsign
     }
     if (out_topicid) *out_topicid = topicid;
     printf("[MQTTSN] SUBACK received topicid=%u qos=%d\n", topicid, qos);
+    
+    // Store topic mapping for later use
+    if (subscribed_topic_count < 10) {
+        subscribed_topics[subscribed_topic_count].topic_id = topicid;
+        strncpy(subscribed_topics[subscribed_topic_count].topic_name, topicname, 63);
+        subscribed_topics[subscribed_topic_count].topic_name[63] = '\0';
+        subscribed_topic_count++;
+        printf("[MQTTSN] Stored topic mapping: ID=%u -> '%s'\n", topicid, topicname);
+    }
+    
     return (int)topicid;
 }
 
@@ -452,22 +480,28 @@ int mqttsn_demo_publish_name(const char *topicname, const uint8_t *payload, int 
 }
 #endif
 
+// Helper function to find topic name from topic ID
+static const char* get_topic_name_by_id(unsigned short topic_id) {
+    for (int i = 0; i < subscribed_topic_count; i++) {
+        if (subscribed_topics[i].topic_id == topic_id) {
+            return subscribed_topics[i].topic_name;
+        }
+    }
+    return NULL;
+}
+
 // Process a single incoming packet (blocking up to timeout_ms). If a PUBLISH
-// is received, print topic and payload. Returns number of bytes processed or
+// is received, parse and invoke callback. Returns number of bytes processed or
 // 0 on timeout, negative on error.
 int mqttsn_demo_process_once(uint32_t timeout_ms){
     unsigned char buf[512];
     int rc = mqttsn_transport_receive(buf, sizeof(buf), timeout_ms);
     
     if (rc > 0) {
-        printf("[UDP] Received %d bytes (blocking, %lu ms timeout)\n", rc, timeout_ms);
-        
         // Check message type
         if (rc >= 2) {
             uint8_t length = buf[0];
             uint8_t msg_type = buf[1];
-            
-            printf("[MQTTSN] Received message type=0x%02X, length=%d\n", msg_type, length);
             
             switch (msg_type) {
                 case 0x18: // DISCONNECT
@@ -478,10 +512,52 @@ int mqttsn_demo_process_once(uint32_t timeout_ms){
                     mqttsn_registered_topicid = 0;
                     return -1;
                     
-                case 0x0C: // PUBLISH
-                    // Handle incoming publish
-                    printf("[MQTTSN] Received PUBLISH message\n");
+                case 0x0C: { // PUBLISH
+#ifdef HAVE_PAHO
+                    // Parse PUBLISH message
+                    unsigned char dup;
+                    int qos;
+                    unsigned char retained;
+                    unsigned short msgid;
+                    int payloadlen;
+                    unsigned char *payload;
+                    MQTTSN_topicid topic;
+                    
+                    int parse_rc = MQTTSNDeserialize_publish(&dup, &qos, &retained, &msgid,
+                                                             &topic, &payload, &payloadlen,
+                                                             buf, rc);
+                    
+                    if (parse_rc == 1) {
+                        printf("[MQTTSN] ← PUBLISH received: TopicID=%u, QoS=%d, MsgID=%u, Len=%d\n",
+                               topic.data.id, qos, msgid, payloadlen);
+                        
+                        // Send PUBACK if QoS 1
+                        if (qos == 1) {
+                            unsigned char puback[7];
+                            int puback_len = MQTTSNSerialize_puback(puback, sizeof(puback),
+                                                                    topic.data.id, msgid, MQTTSN_RC_ACCEPTED);
+                            if (puback_len > 0) {
+                                mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT,
+                                                     puback, puback_len);
+                                printf("[MQTTSN] → PUBACK sent (MsgID=%u)\n", msgid);
+                            }
+                        }
+                        
+                        // Invoke callback if registered
+                        if (message_callback) {
+                            const char *topic_name = get_topic_name_by_id(topic.data.id);
+                            message_callback(topic.data.id, topic_name, payload, payloadlen);
+                        } else {
+                            printf("[MQTTSN] No callback registered for incoming message\n");
+                        }
+                    } else {
+                        printf("[MQTTSN] Failed to parse PUBLISH (rc=%d)\n", parse_rc);
+                    }
+#else
+                    printf("[MQTTSN] Received PUBLISH but Paho not available\n");
+#endif
                     break;
+                }
                     
                 case 0x16: // PINGREQ
                     printf("[MQTTSN] Received PINGREQ - sending PINGRESP\n");
@@ -492,7 +568,7 @@ int mqttsn_demo_process_once(uint32_t timeout_ms){
                     break;
                     
                 default:
-                    printf("[MQTTSN] Received non-PUBLISH or unhandled message\n");
+                    // Silently ignore other message types during normal operation
                     break;
             }
         }

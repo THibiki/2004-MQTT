@@ -126,6 +126,21 @@ void buttons_init() {
     gpio_set_irq_enabled_with_callback(QOS_TOGGLE, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
 }
 
+// Message handler for incoming PUBLISH messages
+void on_message_received(unsigned short topic_id, const char *topic_name, const uint8_t *payload, int payload_len) {
+    printf("\n[MSG] Message received on topic '%s' (ID=%u), %d bytes\n", 
+           topic_name ? topic_name : "<unknown>", topic_id, payload_len);
+    
+    // Check if this is a block chunk (has block header)
+    if (payload_len >= sizeof(block_header_t)) {
+        printf("[MSG] Processing as block chunk...\n");
+        process_block_chunk(payload, payload_len);
+    } else {
+        // Regular message - print as text
+        printf("[MSG] Content: %.*s\n", payload_len, payload);
+    }
+}
+
 int main(){
     stdio_init_all();
     sleep_ms(3000); // Provide time for serial monitor to connect
@@ -194,21 +209,43 @@ int main(){
                 printf("[DEBUG] Using gateway: %s:%d\n", MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT);
                 printf("[INFO] Initial QoS level: %d\n", mqttsn_get_qos());
                 
+                // Register message callback BEFORE connecting
+                mqttsn_set_message_callback(on_message_received);
+                
                 if (mqttsn_demo_init(0) == 0){
                     printf("[TEST] ✓✓✓ SUCCESS: MQTT-SN client fully initialized and connected ✓✓✓\n");
+                    
+                    // Subscribe to topics for receiving messages
+                    printf("\n[SUBSCRIBE] Setting up subscriptions...\n");
+                    
+                    unsigned short chunks_topic_id = 0;
+                    if (mqttsn_demo_subscribe("pico/chunks", 100, &chunks_topic_id) > 0) {
+                        printf("[SUBSCRIBE] ✓ Subscribed to 'pico/chunks' (ID=%u) - for receiving blocks\n", chunks_topic_id);
+                    } else {
+                        printf("[SUBSCRIBE] ✗ Failed to subscribe to 'pico/chunks'\n");
+                    }
+                    
+                    unsigned short commands_topic_id = 0;
+                    if (mqttsn_demo_subscribe("pico/commands", 101, &commands_topic_id) > 0) {
+                        printf("[SUBSCRIBE] ✓ Subscribed to 'pico/commands' (ID=%u) - for receiving commands\n", commands_topic_id);
+                    } else {
+                        printf("[SUBSCRIBE] ✗ Failed to subscribe to 'pico/commands'\n");
+                    }
+                    
                     mqtt_demo_started = true;
                     last_publish = to_ms_since_boot(get_absolute_time());
-                    printf("[MQTTSN] Ready to publish with QoS %d\n", mqttsn_get_qos());
+                    printf("[MQTTSN] Ready for bidirectional communication (QoS %d)\n", mqttsn_get_qos());
+                    printf("[INFO] This Pico can now send AND receive messages!\n");
                 } else {
                     printf("[TEST] ✗ FAILED: MQTT-SN initialization failed\n");
                     printf("[INFO] Will retry in 10 seconds...\n");
                     sleep_ms(10000);
                 }
             } else {
-                // Process incoming MQTT-SN messages
-                int processed = mqttsn_demo_process_once(100);
+                // Process incoming MQTT-SN messages (non-blocking with short timeout)
+                int processed = mqttsn_demo_process_once(50); // 50ms timeout
                 if (processed > 0) {
-                    printf("[MQTTSN] Processed incoming message (%d bytes)\n", processed);
+                    // Message was received and processed by callback
                 } else if (processed == -1) {
                     printf("[MQTTSN] Connection lost - will reconnect...\n");
                     mqtt_demo_started = false;
@@ -216,6 +253,9 @@ int main(){
                     sleep_ms(5000);
                     continue;
                 }
+                
+                // Check for block transfer timeout
+                block_transfer_check_timeout();
 
                 // Periodically publish every 5 seconds
                 uint32_t now_ms = to_ms_since_boot(get_absolute_time());
