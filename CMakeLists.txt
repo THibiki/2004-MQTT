@@ -1,12 +1,15 @@
 cmake_minimum_required(VERSION 3.13)
 
+# This line MUST come before the SDK import
+set(PICO_BOARD pico_w)
+
+# Now import the SDK
 include(pico_sdk_import.cmake)
 
 project(picow_network C CXX ASM)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
-set(PICO_BOARD pico_w)
 
 pico_sdk_init()
 
@@ -34,12 +37,26 @@ else()
 endif()
 
 
+# Add FatFs library
+add_library(fatfs STATIC
+    ${CMAKE_CURRENT_LIST_DIR}/lib/fatfs/source/ff.c
+    ${CMAKE_CURRENT_LIST_DIR}/lib/fatfs/source/diskio_sdcard.c
+    ${CMAKE_CURRENT_LIST_DIR}/lib/fatfs/source/ffsystem.c
+    ${CMAKE_CURRENT_LIST_DIR}/lib/fatfs/source/ffunicode.c
+)
+target_include_directories(fatfs PUBLIC
+    ${CMAKE_CURRENT_LIST_DIR}/lib/fatfs/source
+)
+
+
 add_executable(picow_network
   main.c
   wifi_driver.c
   udp_driver.c
   mqttsn_adapter.c
   mqttsn_client.c
+  block_transfer.c
+  sd_card.c
 )
 
 pico_enable_stdio_usb(picow_network 1)
@@ -52,6 +69,10 @@ target_include_directories(picow_network PRIVATE ${CMAKE_CURRENT_LIST_DIR} )
 target_link_libraries(picow_network PRIVATE
     pico_cyw43_arch_lwip_threadsafe_background 
     pico_stdlib
+    hardware_adc
+    hardware_spi
+    hardware_gpio
+    fatfs
 )
 
 # If Paho was detected, link the library and provide a compile macro so
