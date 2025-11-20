@@ -229,8 +229,8 @@ int wifi_udp_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_ms) {
         }
     } else {
         // Blocking mode with timeout
-        printf("[UDP] Waiting for data (timeout: %lu ms)...\n", timeout_ms);
-        printf("In wifi_udp_receive BEFORE semaphore and mutex, data_recieved = %d\n", data_received);
+        // printf("[UDP] Waiting for data (timeout: %lu ms)...\n", timeout_ms);
+        // printf("In wifi_udp_receive BEFORE semaphore and mutex, data_recieved = %d\n", data_received);
 
         // Wait on semaphore with timeout
         bool acquired = sem_acquire_timeout_ms(&recv_sem, timeout_ms);
@@ -240,7 +240,7 @@ int wifi_udp_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_ms) {
             mutex_enter_blocking(&recv_mutex);
         }
 
-        printf("In wifi_udp_receive AFTER semaphore and mutex, data_recieved = %d\n", data_received);
+        // printf("In wifi_udp_receive AFTER semaphore and mutex, data_recieved = %d\n", data_received);
 
         if (acquired && data_received) {
             result = recv_len;
@@ -248,7 +248,7 @@ int wifi_udp_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_ms) {
             printf("[UDP] Received %d bytes\n", result);
         } else {
             result = WIFI_ETIMEDOUT;
-            printf("[UDP] Receive timeout (%lu ms)\n", timeout_ms);
+            // printf("[UDP] Receive timeout (%lu ms)\n", timeout_ms);
         }
         
         recv_buffer = NULL;

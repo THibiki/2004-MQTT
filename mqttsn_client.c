@@ -18,12 +18,56 @@
 #include "MQTTSNSearch.h"
 #endif
 
+// Dynamic topic registry
+#define MAX_TOPICS 16
+#define MAX_TOPIC_NAME_LEN 64
+
+typedef struct {
+    char name[MAX_TOPIC_NAME_LEN];
+    unsigned short topic_id;
+    bool in_use;
+} topic_entry_t;
+
 static bool mqttsn_initialized = false;
 static bool mqttsn_connected = false;
-static unsigned short mqttsn_registered_topicid = 0;  // For pico/test
-static unsigned short mqttsn_chunks_topicid = 0;      // For pico/chunks
+static topic_entry_t topic_registry[MAX_TOPICS];
 static unsigned short mqttsn_msg_id = 1;
 static int current_qos = 0;  // Default to QoS 0
+
+// Helper: Find topic ID in registry by name (returns 0 if not found)
+static unsigned short find_topic_id(const char *topic_name) {
+    for (int i = 0; i < MAX_TOPICS; i++) {
+        if (topic_registry[i].in_use && strcmp(topic_registry[i].name, topic_name) == 0) {
+            return topic_registry[i].topic_id;
+        }
+    }
+    return 0;
+}
+
+// Helper: Add topic to registry
+static bool add_topic_to_registry(const char *topic_name, unsigned short topic_id) {
+    // Check if already exists
+    for (int i = 0; i < MAX_TOPICS; i++) {
+        if (topic_registry[i].in_use && strcmp(topic_registry[i].name, topic_name) == 0) {
+            topic_registry[i].topic_id = topic_id;  // Update existing
+            return true;
+        }
+    }
+    
+    // Find empty slot
+    for (int i = 0; i < MAX_TOPICS; i++) {
+        if (!topic_registry[i].in_use) {
+            strncpy(topic_registry[i].name, topic_name, MAX_TOPIC_NAME_LEN - 1);
+            topic_registry[i].name[MAX_TOPIC_NAME_LEN - 1] = '\0';
+            topic_registry[i].topic_id = topic_id;
+            topic_registry[i].in_use = true;
+            return true;
+        }
+    }
+    
+    printf("[MQTTSN] ✗ Topic registry full (max %d topics)\n", MAX_TOPICS);
+    return false;
+}
 
 // Get current QoS level
 int mqttsn_get_qos(void) {
@@ -102,108 +146,21 @@ int mqttsn_demo_init(uint16_t local_port){
         printf("[MQTTSN] ✗ CONNACK not received (rc=%d)\n", r);
         return -5;
     }
-
-    // Step 3: Register the default topic
-    const char *default_topic = "pico/test";
-    printf("[MQTTSN] Registering topic '%s'...\n", default_topic);
     
-    unsigned short topicid = 0;  // 0 means we want the gateway to assign an ID
+    // Initialize topic registry
+    for (int i = 0; i < MAX_TOPICS; i++) {
+        topic_registry[i].in_use = false;
+        topic_registry[i].topic_id = 0;
+        topic_registry[i].name[0] = '\0';
+    }
     
-    // MQTTSNSerialize_register(buf, buflen, topicid, msgid, topicname)
-    // The last parameter should be MQTTSNString, not MQTTSN_topicid
-    MQTTSNString topic_string = MQTTSNString_initializer;
-    topic_string.cstring = (char*)default_topic;
-    topic_string.lenstring.len = strlen(default_topic);
-    
-    len = MQTTSNSerialize_register(buf, sizeof(buf), topicid, mqttsn_msg_id, &topic_string);
-    if (len <= 0) {
-        printf("[MQTTSN] Failed to serialize REGISTER (rc=%d)\n", len);
-        printf("[DEBUG] Buffer size: %zu, topic length: %zu, msgid: %u\n", 
-               sizeof(buf), strlen(default_topic), mqttsn_msg_id);
-        return -6;
-    }
-
-    printf("[DEBUG] REGISTER packet (%d bytes): ", len);
-    for(int i = 0; i < len; i++) {
-        printf("%02x ", buf[i]);
-    }
-    printf("\n");
-
-    s = mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, buf, len);
-    if (s != 0) {
-        printf("[MQTTSN] REGISTER send failed (err=%d)\n", s);
-        return -7;
-    }
-
-    // Step 4: Wait for REGACK
-    printf("[MQTTSN] Waiting for REGACK...\n");
-    r = mqttsn_transport_receive(buf, sizeof(buf), 5000);
-    if (r > 0) {
-        printf("[DEBUG] Received %d bytes: ", r);
-        for(int i = 0; i < r && i < 20; i++) {
-            printf("%02x ", buf[i]);
-        }
-        printf("\n");
-
-        unsigned short returned_topicid = 0;
-        unsigned short returned_msgid = 0;
-        unsigned char return_code = 0;
-
-        int d = MQTTSNDeserialize_regack(&returned_topicid, &returned_msgid, &return_code, buf, r);
-        if (d == 1) {
-            if (return_code == MQTTSN_RC_ACCEPTED) {
-                mqttsn_registered_topicid = returned_topicid;
-                printf("[MQTTSN] ✓ Topic registered (TopicID=%u, MsgID=%u)\n", 
-                       returned_topicid, returned_msgid);
-            } else {
-                printf("[MQTTSN] ✗ Topic registration rejected (code=%d)\n", return_code);
-                return -8;
-            }
-        } else {
-            printf("[MQTTSN] ✗ Failed to parse REGACK\n");
-            return -9;
-        }
-    } else {
-        printf("[MQTTSN] ✗ REGACK not received (rc=%d)\n", r);
-        return -10;
-    }
-
-    mqttsn_msg_id++;
-    
-    // Also register pico/chunks topic for block transfers
-    printf("[MQTTSN] Registering topic 'pico/chunks' for block transfers...\n");
-    const char *chunks_topic = "pico/chunks";
-    MQTTSNString chunks_topic_string = MQTTSNString_initializer;
-    chunks_topic_string.cstring = (char*)chunks_topic;
-    chunks_topic_string.lenstring.len = strlen(chunks_topic);
-    
-    len = MQTTSNSerialize_register(buf, sizeof(buf), 0, mqttsn_msg_id, &chunks_topic_string);
-    if (len > 0) {
-        s = mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, buf, len);
-        if (s == 0) {
-            r = mqttsn_transport_receive(buf, sizeof(buf), 5000);
-            if (r > 0) {
-                unsigned short chunks_topicid = 0;
-                unsigned short chunks_msgid = 0;
-                unsigned char chunks_rc = 0;
-                if (MQTTSNDeserialize_regack(&chunks_topicid, &chunks_msgid, &chunks_rc, buf, r) == 1) {
-                    if (chunks_rc == MQTTSN_RC_ACCEPTED) {
-                        mqttsn_chunks_topicid = chunks_topicid;
-                        printf("[MQTTSN] ✓ Topic 'pico/chunks' registered (TopicID=%u)\n", chunks_topicid);
-                        mqttsn_msg_id++;
-                    } else {
-                        printf("[MQTTSN] ⚠ Topic 'pico/chunks' registration rejected (code=%d)\n", chunks_rc);
-                    }
-                }
-            }
-        }
-    }
+    printf("[MQTTSN] ✓ Topic registry initialized (dynamic registration enabled)\n");
 #else
     printf("[MQTTSN] Paho not available at build time\n");
 #endif
 
     mqttsn_initialized = true;
-    printf("[MQTTSN] ✓✓✓ Initialization complete - ready to publish ✓✓✓\n");
+    printf("[MQTTSN] ✓✓✓ Initialization complete - ready to publish with dynamic topic registration ✓✓✓\n");
     return 0;
 }
 
@@ -235,6 +192,66 @@ int mqttsn_demo_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_ms){
 }
 
 #ifdef HAVE_PAHO
+// Dynamically register a topic and return its topic ID (or negative on error)
+static int register_topic(const char *topic_name) {
+    if (!mqttsn_connected) {
+        printf("[MQTTSN] ✗ Cannot register topic - not connected\n");
+        return -1;
+    }
+    
+    unsigned char buf[256];
+    MQTTSNString topic_string = MQTTSNString_initializer;
+    topic_string.cstring = (char*)topic_name;
+    topic_string.lenstring.len = strlen(topic_name);
+    
+    printf("[MQTTSN] → Registering topic '%s'...\n", topic_name);
+    
+    int len = MQTTSNSerialize_register(buf, sizeof(buf), 0, mqttsn_msg_id, &topic_string);
+    if (len <= 0) {
+        printf("[MQTTSN] ✗ Failed to serialize REGISTER (rc=%d)\n", len);
+        return -2;
+    }
+    
+    int s = mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, buf, len);
+    if (s != 0) {
+        printf("[MQTTSN] ✗ REGISTER send failed (err=%d)\n", s);
+        return -3;
+    }
+    
+    // Wait for REGACK
+    int r = mqttsn_transport_receive(buf, sizeof(buf), 5000);
+    if (r <= 0) {
+        printf("[MQTTSN] ✗ REGACK not received (timeout)\n");
+        return -4;
+    }
+    
+    unsigned short returned_topicid = 0;
+    unsigned short returned_msgid = 0;
+    unsigned char return_code = 0;
+    
+    int d = MQTTSNDeserialize_regack(&returned_topicid, &returned_msgid, &return_code, buf, r);
+    if (d != 1) {
+        printf("[MQTTSN] ✗ Failed to parse REGACK\n");
+        return -5;
+    }
+    
+    if (return_code != MQTTSN_RC_ACCEPTED) {
+        printf("[MQTTSN] ✗ Topic registration rejected (code=%d)\n", return_code);
+        return -6;
+    }
+    
+    // Add to registry
+    if (!add_topic_to_registry(topic_name, returned_topicid)) {
+        printf("[MQTTSN] ✗ Failed to add topic to registry\n");
+        return -7;
+    }
+    
+    printf("[MQTTSN] ✓ Topic '%s' registered (TopicID=%u)\n", topic_name, returned_topicid);
+    mqttsn_msg_id++;
+    
+    return (int)returned_topicid;
+}
+
 // Subscribe to a topic name. Returns topic id (>0) on success, or negative on error.
 int mqttsn_demo_subscribe(const char *topicname, unsigned short packetid, unsigned short *out_topicid){
     if (!mqttsn_initialized) return -1;
@@ -279,20 +296,18 @@ int mqttsn_demo_publish_name(const char *topicname, const uint8_t *payload, int 
         return -2;
     }
     
-    // Select appropriate topic ID based on topic name
-    unsigned short topic_id_to_use = 0;
-    if (strcmp(topicname, "pico/chunks") == 0) {
-        topic_id_to_use = mqttsn_chunks_topicid;
-    } else if (strcmp(topicname, "pico/test") == 0 || strcmp(topicname, "pico/block") == 0) {
-        topic_id_to_use = mqttsn_registered_topicid;
-    } else {
-        // Default to registered topic ID
-        topic_id_to_use = mqttsn_registered_topicid;
-    }
+    // Check if topic is already registered
+    unsigned short topic_id_to_use = find_topic_id(topicname);
     
+    // If not registered, register it now (dynamic registration)
     if (topic_id_to_use == 0) {
-        printf("[MQTTSN] ✗ Cannot publish to '%s' - topic not registered\n", topicname);
-        return -3;
+        printf("[MQTTSN] Topic '%s' not yet registered, registering now...\n", topicname);
+        int reg_result = register_topic(topicname);
+        if (reg_result < 0) {
+            printf("[MQTTSN] ✗ Failed to register topic '%s' (err=%d)\n", topicname, reg_result);
+            return -3;
+        }
+        topic_id_to_use = (unsigned short)reg_result;
     }
 
     unsigned char buf[512];
@@ -475,7 +490,11 @@ int mqttsn_demo_process_once(uint32_t timeout_ms){
                     printf("[MQTTSN] Gateway or broker closed the connection\n");
                     printf("[INFO] Check if broker is running on 127.0.0.1:1883\n");
                     mqttsn_connected = false;
-                    mqttsn_registered_topicid = 0;
+                    
+                    // Clear topic registry on disconnect
+                    for (int i = 0; i < MAX_TOPICS; i++) {
+                        topic_registry[i].in_use = false;
+                    }
                     return -1;
                     
                 case 0x0C: // PUBLISH
@@ -519,7 +538,13 @@ void mqttsn_demo_close(void){
         mqttsn_transport_close();
         mqttsn_initialized = false;
         mqttsn_connected = false;
-        mqttsn_registered_topicid = 0;
+        
+        // Clear topic registry
+        for (int i = 0; i < MAX_TOPICS; i++) {
+            topic_registry[i].in_use = false;
+            topic_registry[i].topic_id = 0;
+        }
+        
         printf("[MQTTSN] Client closed\n");
     }
 }

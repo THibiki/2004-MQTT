@@ -9,3 +9,6 @@ build
 
 # Ignore secrets
 **/network_config.h
+
+# Ignore the Paho MQTT-SN Embedded C library
+lib/paho.mqtt-sn.embedded-c
