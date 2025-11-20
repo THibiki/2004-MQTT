@@ -81,3 +81,30 @@ if (EXISTS "${PAHO_DIR}")
   target_link_libraries(picow_network PRIVATE mqttsn_paho)
   target_compile_definitions(picow_network PRIVATE HAVE_PAHO=1)
 endif()
+
+# Subscriber executable
+add_executable(picow_subscriber
+  subscriber_main.c
+  wifi_driver.c
+  udp_driver.c
+  mqttsn_adapter.c
+  mqttsn_client.c
+)
+
+pico_enable_stdio_usb(picow_subscriber 1)
+pico_enable_stdio_uart(picow_subscriber 0)
+
+pico_add_extra_outputs(picow_subscriber)
+
+target_include_directories(picow_subscriber PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+
+target_link_libraries(picow_subscriber PRIVATE
+    pico_cyw43_arch_lwip_threadsafe_background 
+    pico_stdlib
+    hardware_gpio
+)
+
+if (EXISTS "${PAHO_DIR}")
+  target_link_libraries(picow_subscriber PRIVATE mqttsn_paho)
+  target_compile_definitions(picow_subscriber PRIVATE HAVE_PAHO=1)
+endif()

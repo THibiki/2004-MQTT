@@ -40,18 +40,20 @@ void mqttsn_set_qos(int qos) {
     }
 }
 
-int mqttsn_demo_init(uint16_t local_port){
+int mqttsn_demo_init(uint16_t local_port, const char *client_id){
     int rc = mqttsn_transport_open(local_port);
     if (rc != 0){
-        printf("[MQTTSN] Failed to open transport (err=%d)\n", rc);
-        return rc;
+        printf("[MQTTSN] Transport open failed: %d\n", rc);
+        return -1;
     }
 
 #ifdef HAVE_PAHO
     // Step 1: Build and send CONNECT packet
     unsigned char buf[256];
     MQTTSNPacket_connectData options = MQTTSNPacket_connectData_initializer;
-    options.clientID.cstring = "pico_w_client";
+    
+    options.clientID.cstring = (client_id != NULL) ? (char*)client_id : "pico_w_client";
+    
     options.duration = 60; // keepalive in seconds
     options.cleansession = 1;
 

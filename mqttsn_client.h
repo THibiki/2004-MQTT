@@ -8,7 +8,7 @@
 
 #include <stdint.h>
 
-int mqttsn_demo_init(uint16_t local_port);
+int mqttsn_demo_init(uint16_t local_port, const char *client_id);
 int mqttsn_demo_send_test(const char *payload);
 int mqttsn_demo_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_ms);
 void mqttsn_demo_close(void);
