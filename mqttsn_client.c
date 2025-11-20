@@ -280,6 +280,9 @@ int mqttsn_demo_publish_name(const char *topicname, const uint8_t *payload, int 
         printf("[MQTTSN] ✗ Cannot publish - not connected\n");
         return -2;
     }
+
+    // Print payload
+    printf("[PUBLISHER] Payload (%d bytes): %.*s\n", payloadlen, payloadlen, (const char*)payload);
     
     // Select appropriate topic ID based on topic name
     unsigned short topic_id_to_use = 0;
