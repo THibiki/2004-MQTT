@@ -20,6 +20,9 @@
 #define QOS_TOGGLE 22  // GP22
 #define BLOCK_TRANSFER 21  // GP22
 
+// Timestamp (ms) for rate-limiting WiFi status messages
+static uint32_t last_wifi_wait_print = 0;
+
 // Button debouncing
 static volatile uint32_t last_button_press = 0;
 static uint32_t last_block_transfer_button_press = 0;
@@ -245,8 +248,11 @@ int main(){
             }
 
         } else {
-            if (now % 5000 < 100) {
+            // Prints every 5 seconds
+            uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+            if (now_ms - last_wifi_wait_print >= 5000) {
                 printf("[APP] Waiting for WiFi... (Status: %s)\n", wifi_get_status());
+                last_wifi_wait_print = now_ms;
             }
         }
 
