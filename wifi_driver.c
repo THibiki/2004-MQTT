@@ -95,6 +95,10 @@ int wifi_get_network_info(wifi_network_info_t *info) {
 // Connect to WiFi and get IP from DHCP pool (blocking)
 int wifi_connect(void) {
     printf("[INFO] Connecting to: %s\n", wifi_state.ssid);
+
+    // start connection time
+    absolute_time_t connect_start = get_absolute_time();
+
     // Debug: print masked password info to help diagnose "Bad Password" auth
     size_t pwdlen = strlen(wifi_state.password);
     if (pwdlen > 0) {
@@ -111,19 +115,33 @@ int wifi_connect(void) {
         CYW43_AUTH_WPA2_AES_PSK, 
         CONNECTION_TIMEOUT_MS
     );
+
+    // calculate connection time
+    absolute_time_t connect_end = get_absolute_time();
+    uint32_t connection_time_ms = absolute_time_diff_us(connect_start, connect_end) / 1000;
     
     // Sucessful Connection
     if (result == 0) {
         wifi_state.connected = true;
+        wifi_state.last_connection_time_ms = connection_time_ms;
+        wifi_state.total_connection_time_ms += connection_time_ms;
+        
+        // Track fastest/slowest
+        if (wifi_state.fastest_connection_ms == 0 || connection_time_ms < wifi_state.fastest_connection_ms) {
+            wifi_state.fastest_connection_ms = connection_time_ms;
+        }
+        if (connection_time_ms > wifi_state.slowest_connection_ms) {
+            wifi_state.slowest_connection_ms = connection_time_ms;
+        }
+
+        printf("[SUCCESS] ✓ WiFi, %s, connected in %lu ms\n", wifi_state.ssid, connection_time_ms);
         
         // Get and display IP address
         wifi_print_network_info();
         
         return 0;
     } else {
-        /* Extra debug information: print the raw cyw43 return and link status
-         * This helps distinguish authentication failures from other errors
-         * (e.g. wrong auth mode, AP rejecting association, or driver errors). */
+        // Wifi connection issue error
         int link_status = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
         printf("[INFO] WiFi Connection failed: %d\n", result);
         printf("   Link status (numeric): %d\n", link_status);
@@ -168,8 +186,16 @@ void wifi_print_stats(void) {
     printf("╚════════════════════════════════════════╝\n");
     printf("SSID: %s\n", wifi_state.ssid);
     printf("Status: %s\n", wifi_get_status());
-    printf("Disconnections: %lu\n", wifi_state.disconnect_count);
+    printf("Disconnections: %d\n", wifi_state.disconnect_count);
     printf("Reconnect attempts: %lu\n", wifi_state.reconnect_count);
+    printf("Last connection time: %lu ms\n", wifi_state.last_connection_time_ms / 1000);
+    printf("Fastest connection: %lu ms\n", wifi_state.fastest_connection_ms);
+    printf("Slowest connection: %lu ms\n", wifi_state.slowest_connection_ms);
+
+    if (wifi_state.reconnect_count > 0) {
+        printf("Average connection time: %lu ms\n", 
+            wifi_state.total_connection_time_ms / (wifi_state.reconnect_count + 1));
+    }
     
     if (wifi_state.connected) {
         wifi_network_info_t net_info;
