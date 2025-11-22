@@ -20,4 +20,7 @@ int mqttsn_transport_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_m
 // Close transport
 void mqttsn_transport_close(void);
 
+// Platform-specific timer for client
+uint32_t mqttsn_get_time_ms(void);
+
 #endif // MQTTSN_ADAPTER_H

@@ -3,11 +3,11 @@
 #ifndef WIFI_DRIVER_H
 #define WIFI_DRIVER_H
 
-#include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
+
+#include "lwip/netif.h"
 #include "lwip/ip4_addr.h"
-#include "lwip/ip_addr.h"
 
 
 // Configuration

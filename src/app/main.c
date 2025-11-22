@@ -9,13 +9,13 @@
 #include "ff.h"
 
 // Custom header files
-#include "network_config.h"
-#include "wifi_driver.h"
-#include "udp_driver.h"
-#include "network_errors.h"
-#include "mqttsn_client.h"
-#include "block_transfer.h"
-#include "sd_card.h"
+#include "config/network_config.h"
+#include "drivers/wifi_driver.h"
+#include "drivers/udp_driver.h"
+#include "net/network_errors.h"
+#include "protocol/mqttsn/mqttsn_client.h"
+#include "drivers/block_transfer.h"
+#include "drivers/sd_card.h"
 
 #define QOS_TOGGLE 22  // GP22
 #define BLOCK_TRANSFER 21  // GP22
