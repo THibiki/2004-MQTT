@@ -187,7 +187,6 @@ int main(){
 
         // 3. WiFi Connected
         if (is_connected){
-            cyw43_arch_poll();
 
             if (!mqtt_demo_started){
                 printf("\n[TEST] Initializing MQTT-SN client...\n");
@@ -263,9 +262,10 @@ int main(){
                 printf("Uptime: %lu seconds\n", (now - connection_start_time) / 1000);
             }
             last_status_print = get_absolute_time();
+            // Read statistics
+            sleep_ms(3000);
         }
 
-        cyw43_arch_poll();
         sleep_ms(10);
     }
 

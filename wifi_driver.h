@@ -15,7 +15,7 @@
 #define RECONNECT_ATTEMPT_INTERVAL_MS 10000 // Try reconnecting every 10 seconds
 #define CONNECTION_TIMEOUT_MS 7000         // Wait 7s for connection attempt
 
-// Simple WiFi state
+// Simple WiFi state with connection time
 typedef struct {
     char ssid[33];
     char password[64];
@@ -25,6 +25,10 @@ typedef struct {
     absolute_time_t last_reconnect_time;
     uint32_t reconnect_count;
     uint32_t disconnect_count;
+    uint32_t last_connection_time_ms;
+    uint32_t fastest_connection_ms;
+    uint32_t slowest_connection_ms;
+    uint32_t total_connection_time_ms;
 } simple_wifi_t;
 
 // WiFi IP Binary format - for network operations
