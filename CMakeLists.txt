@@ -89,6 +89,8 @@ add_executable(picow_subscriber
   udp_driver.c
   mqttsn_adapter.c
   mqttsn_client.c
+  block_transfer.c
+  sd_card.c
 )
 
 pico_enable_stdio_usb(picow_subscriber 1)
@@ -102,6 +104,9 @@ target_link_libraries(picow_subscriber PRIVATE
     pico_cyw43_arch_lwip_threadsafe_background 
     pico_stdlib
     hardware_gpio
+    hardware_spi
+    hardware_adc
+    fatfs
 )
 
 if (EXISTS "${PAHO_DIR}")

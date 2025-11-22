@@ -112,7 +112,7 @@ int send_block_transfer(const char *topic, const uint8_t *data, size_t data_len)
         }
         
         if (ret != MQTTSN_OK) {
-            printf("Failed to send chunk %d/%d after %d attempts\n", part, total_parts, max_retries);
+            printf("Failed to send chunk %d/%d\n", part, total_parts);
             return -1;
         }
         
@@ -174,25 +174,55 @@ int send_block_transfer_qos(const char *topic, const uint8_t *data, size_t data_
         
         int ret;
         if (qos == 1) {
-            // QoS 1 - will wait for PUBACK, retry if timeout
-            int max_retries = 3;
-            ret = MQTTSN_ERROR;
+            // // QoS 1 - will wait for PUBACK, retry if timeout
+            // int max_retries = 3;
+            // ret = MQTTSN_ERROR;
             
-            for (int attempt = 1; attempt <= max_retries; attempt++) {
-                ret = mqttsn_publish(topic, packet, packet_size, 1);
+            // for (int attempt = 1; attempt <= max_retries; attempt++) {
+            //     ret = mqttsn_publish(topic, packet, packet_size, 1);
                 
+            //     if (ret == MQTTSN_OK) {
+            //         break; // Success - PUBACK received
+            //     } else if (attempt < max_retries) {
+            //         printf("  Retry %d/%d for chunk %d (no PUBACK)\n", attempt, max_retries, part);
+            //         sleep_ms(100); // Small delay before retry
+            //     }
+            // }
+            
+            // if (ret != MQTTSN_OK) {
+            //     printf("Failed to send chunk %d/%d\n", part, total_parts);
+            //     return -1;
+            // }
+            
+            // Send with QoS 1 - will wait for PUBACK, retry if timeout
+            int max_retries = -1; // New value: -1 signifies infinite retries
+            int ret = MQTTSN_ERROR;
+
+            // The loop condition is changed to:
+            // (max_retries < 0) - keeps the loop going if max_retries is negative (i.e., -1)
+            // OR (attempt <= max_retries) - runs for a finite count if max_retries is positive
+            for (int attempt = 1; max_retries < 0 || attempt <= max_retries; attempt++) {
+                ret = mqttsn_publish(topic, packet, packet_size, 1); // QoS 1
+    
                 if (ret == MQTTSN_OK) {
                     break; // Success - PUBACK received
-                } else if (attempt < max_retries) {
-                    printf("  Retry %d/%d for chunk %d (no PUBACK)\n", attempt, max_retries, part);
+                } else if (max_retries < 0 || attempt < max_retries) {
+                    // Only print retry message if we are retrying (either infinitely or not yet done)
+                    if (max_retries < 0) {
+                        printf("  Retry %d (infinite mode) for chunk %d (no PUBACK)\n", attempt, part);
+                    } else {
+                        printf("  Retry %d/%d for chunk %d (no PUBACK)\n", attempt, max_retries, part);
+                    }
                     sleep_ms(100); // Small delay before retry
                 }
             }
-            
+            // The failure block is still reachable if 'ret' never becomes MQTTSN_OK
+            // (i.e., if mqttsn_publish fails consistently and returns an error other than timeout)
             if (ret != MQTTSN_OK) {
-                printf("Failed to send chunk %d/%d after %d attempts\n", part, total_parts, max_retries);
+                printf("Failed to send chunk %d/%d after %s retries\n", part, total_parts, max_retries < 0 ? "infinite" : "all allowed");
                 return -1;
             }
+
         } else if (qos == 2) {
             // QoS 2 - will wait for PUBREC/PUBREL/PUBCOMP handshake, retry if timeout
             int max_retries = 3;
@@ -431,11 +461,16 @@ void process_block_chunk(const uint8_t *data, size_t len) {
         if (current_block.received_parts == current_block.total_parts) {
             printf("\n=== BLOCK TRANSFER COMPLETE ===\n");
             printf("Block ID: %d\n", current_block.block_id);
-            printf("Total size: %d bytes\n", current_block.total_length);
-            printf("Reassembled message:\n");
-            printf("--- BEGIN MESSAGE ---\n");
-            printf("%.*s", current_block.total_length, current_block.data_buffer);
-            printf("\n--- END MESSAGE ---\n");
+            printf("Total size: %d bytes (%.2f KB)\n", current_block.total_length, 
+                   current_block.total_length / 1024.0);
+            
+            // Show first 32 bytes as hex preview (safe for binary data)
+            printf("Data preview (first 32 bytes hex): ");
+            int preview_len = (current_block.total_length < 32) ? current_block.total_length : 32;
+            for (int i = 0; i < preview_len; i++) {
+                printf("%02X ", current_block.data_buffer[i]);
+            }
+            printf("\n");
             
             // Detect file type from data signature
             const char *file_ext = ".bin";  // Default extension

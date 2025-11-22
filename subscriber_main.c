@@ -8,6 +8,9 @@
 #include "network_config.h"
 #include "wifi_driver.h"
 #include "mqttsn_client.h"
+#include "mqttsn_adapter.h"
+#include "block_transfer.h"
+#include "sd_card.h"
 
 #ifdef HAVE_PAHO
 #include "MQTTSNPacket.h"
@@ -21,6 +24,7 @@
 
 static bool mqtt_subscriber_ready = false;
 static unsigned short subscribed_topicid = 0;
+static unsigned short chunks_topicid = 0;
 
 // Process received PUBLISH messages
 static void process_publish_message(unsigned char *buf, int len) {
@@ -41,13 +45,22 @@ static void process_publish_message(unsigned char *buf, int len) {
         printf("  TopicID: %u\n", topic.data.id);
         printf("  QoS: %d\n", qos);
         printf("  MsgID: %u\n", msgid);
-        printf("  Payload (%d bytes): ", payloadlen);
+        printf("  Payload (%d bytes)\n", payloadlen);
         
-        // Print payload (assume text)
-        for (int i = 0; i < payloadlen; i++) {
-            printf("%c", payload[i]);
+        // Check if this is a block chunk (from pico/chunks topic)
+        printf("[DEBUG] Checking TopicID: received=%u, chunks_topicid=%u\n", 
+               topic.data.id, chunks_topicid);
+        if (topic.data.id == chunks_topicid) {
+            printf("[SUBSCRIBER] Processing block chunk...\n");
+            process_block_chunk(payload, payloadlen);
+        } else {
+            // Regular message - print as text
+            printf("  Message: ");
+            for (int i = 0; i < payloadlen; i++) {
+                printf("%c", payload[i]);
+            }
+            printf("\n");
         }
-        printf("\n");
         
         // Send PUBACK for QoS 1
         if (qos == 1) {
@@ -223,10 +236,57 @@ int main() {
                 if (mqttsn_demo_init(0, "pico_w_subscriber") == 0) {
                     printf("[SUBSCRIBER] ✓ Connected to gateway\n");
                     
-                    // Subscribe to pico/test
-                    if (subscribe_to_topic("pico/test") == 0) {
+                    // Initialize SD card for saving received blocks
+                    printf("[SUBSCRIBER] Initializing SD card...\n");
+                    if (sd_card_init() == 0) {
+                        printf("[SUBSCRIBER] ✓ SD card ready\n");
+                    } else {
+                        printf("[SUBSCRIBER] ⚠️  SD card not available (blocks won't be saved)\n");
+                    }
+                    
+                    // Initialize block transfer system
+                    block_transfer_init();
+                    
+                    // Subscribe to pico/test (for regular messages)
+                    bool test_ok = (subscribe_to_topic("pico/test") == 0);
+                    
+                    // Subscribe to pico/chunks (for block transfers)
+                    printf("\n[SUBSCRIBER] Subscribing to block transfer topic...\n");
+                    unsigned short temp_topicid = 0;
+                    bool chunks_ok = false;
+                    
+                    #ifdef HAVE_PAHO
+                    unsigned char buf[256];
+                    MQTTSN_topicid topic;
+                    topic.type = MQTTSN_TOPIC_TYPE_NORMAL;
+                    topic.data.long_.name = "pico/chunks";
+                    topic.data.long_.len = 11;
+                    
+                    unsigned short msgid = 101;
+                    int len = MQTTSNSerialize_subscribe(buf, sizeof(buf), 0, 1, msgid, &topic);
+                    
+                    if (len > 0) {
+                        int s = mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, buf, len);
+                        if (s == 0) {
+                            int r = mqttsn_transport_receive(buf, sizeof(buf), 5000);
+                            if (r > 0) {
+                                int granted_qos;
+                                unsigned char returncode;
+                                if (MQTTSNDeserialize_suback(&granted_qos, &temp_topicid, &msgid, 
+                                                            &returncode, buf, r) == 1 && returncode == 0) {
+                                    chunks_topicid = temp_topicid;
+                                    chunks_ok = true;
+                                    printf("[SUBSCRIBER] ✓ Subscribed to 'pico/chunks' (TopicID=%u, QoS=%d)\n", 
+                                           chunks_topicid, granted_qos);
+                                }
+                            }
+                        }
+                    }
+                    #endif
+                    
+                    if (test_ok && chunks_ok) {
                         mqtt_subscriber_ready = true;
-                        printf("[SUBSCRIBER] ✓✓✓ Ready to receive messages ✓✓✓\n");
+                        printf("[SUBSCRIBER] ✓✓✓ Ready to receive messages and blocks ✓✓✓\n");
                     } else {
                         printf("[SUBSCRIBER] Subscription failed, retrying...\n");
                         mqttsn_demo_close();
