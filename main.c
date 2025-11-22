@@ -148,8 +148,6 @@ int main(){
         printf("[WARNING] Initial connection failed - will retry automatically\n");
     }
 
-    sleep_ms(2000);
-
     block_transfer_init();
 
     // Main Loop
