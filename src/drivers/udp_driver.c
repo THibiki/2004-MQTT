@@ -3,16 +3,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h> //for debugging to see values
-#include <lwip/udp.h>
-#include <lwip/netif.h>
 
-#include "pico/stdlib.h"
-#include "pico/cyw43_arch.h"
-#include "pico/sem.h"
-#include "pico/mutex.h"
-
-#include "udp_driver.h"
-#include "network_errors.h"
+#include "drivers/udp_driver.h"
+#include "net/network_errors.h" 
 
 // UDP State
 static struct udp_pcb *udp_pcb = NULL;
@@ -230,7 +223,6 @@ int wifi_udp_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_ms) {
     } else {
         // Blocking mode with timeout
         printf("[UDP] Waiting for data (timeout: %lu ms)...\n", timeout_ms);
-        printf("In wifi_udp_receive BEFORE semaphore and mutex, data_recieved = %d\n", data_received);
 
         // Wait on semaphore with timeout
         bool acquired = sem_acquire_timeout_ms(&recv_sem, timeout_ms);
@@ -239,8 +231,6 @@ int wifi_udp_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_ms) {
         if (mutex_initialized) {
             mutex_enter_blocking(&recv_mutex);
         }
-
-        printf("In wifi_udp_receive AFTER semaphore and mutex, data_recieved = %d\n", data_received);
 
         if (acquired && data_received) {
             result = recv_len;

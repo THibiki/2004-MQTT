@@ -4,8 +4,8 @@
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
 
-#include "wifi_driver.h"
-#include "network_errors.h"
+#include "drivers/wifi_driver.h"
+#include "net/network_errors.h"
 
 static simple_wifi_t wifi_state = {0};
 

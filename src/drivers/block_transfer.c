@@ -1,6 +1,6 @@
-#include "block_transfer.h"
-#include "mqttsn_client.h"
-#include "sd_card.h"
+#include "drivers/block_transfer.h"
+#include "protocol/mqttsn/mqttsn_client.h"
+#include "drivers/sd_card.h"
 #include "ff.h"  // FatFs library for directory operations
 #include <stdio.h>
 #include <string.h>

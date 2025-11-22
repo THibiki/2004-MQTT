@@ -5,8 +5,8 @@
 #define MQTTSN_OK     0 // Operation Successful
 #define MQTTSN_ERROR   -1
 
-
 #include <stdint.h>
+
 
 int mqttsn_demo_init(uint16_t local_port);
 int mqttsn_demo_send_test(const char *payload);
