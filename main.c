@@ -126,21 +126,6 @@ void buttons_init() {
     gpio_set_irq_enabled_with_callback(QOS_TOGGLE, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
 }
 
-// Message handler for incoming PUBLISH messages
-void on_message_received(unsigned short topic_id, const char *topic_name, const uint8_t *payload, int payload_len) {
-    printf("\n[MSG] Message received on topic '%s' (ID=%u), %d bytes\n", 
-           topic_name ? topic_name : "<unknown>", topic_id, payload_len);
-    
-    // Check if this is a block chunk (has block header)
-    if (payload_len >= sizeof(block_header_t)) {
-        printf("[MSG] Processing as block chunk...\n");
-        process_block_chunk(payload, payload_len);
-    } else {
-        // Regular message - print as text
-        printf("[MSG] Content: %.*s\n", payload_len, payload);
-    }
-}
-
 int main(){
     stdio_init_all();
     sleep_ms(3000); // Provide time for serial monitor to connect
