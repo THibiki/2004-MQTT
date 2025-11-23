@@ -135,6 +135,68 @@ void buttons_init() {
     gpio_set_irq_enabled_with_callback(QOS_TOGGLE, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
 }
 
+// Check for incoming messages (can be called from anywhere, including during block transfer)
+int mqttsn_check_incoming_messages(void) {
+    unsigned char recv_buf[256];
+    int messages_processed = 0;
+    
+    // Check up to 5 messages without blocking
+    for (int i = 0; i < 5; i++) {
+        int recv_rc = mqttsn_transport_receive(recv_buf, sizeof(recv_buf), 1);
+        
+        if (recv_rc <= 0 || recv_rc < 2) {
+            break;
+        }
+        
+        uint8_t msg_type = recv_buf[1];
+        
+        if (msg_type == 0x0C) {  // PUBLISH
+            #ifdef HAVE_PAHO
+            unsigned char dup, retained;
+            unsigned short msgid;
+            int qos;
+            MQTTSN_topicid topic;
+            unsigned char *payload;
+            int payloadlen;
+            
+            if (MQTTSNDeserialize_publish(&dup, &qos, &retained, &msgid, 
+                                         &topic, &payload, &payloadlen, 
+                                         recv_buf, recv_rc) == 1) {
+                
+                // Check if this is a retransmit request
+                if (payloadlen >= 5 && strncmp((char*)payload, "RETX:", 5) == 0) {
+                    printf("\n[PUBLISHER] 📩 RETX received during transfer!\n");
+                    
+                    char request_msg[256];
+                    int copy_len = (payloadlen < 255) ? payloadlen : 255;
+                    memcpy(request_msg, payload, copy_len);
+                    request_msg[copy_len] = '\0';
+                    
+                    block_transfer_handle_retransmit_request(request_msg);
+                }
+                
+                // Send PUBACK if needed
+                if (qos == 1) {
+                    unsigned char puback_buf[7];
+                    puback_buf[0] = 7;
+                    puback_buf[1] = 0x0D;
+                    puback_buf[2] = (topic.data.id >> 8);
+                    puback_buf[3] = (topic.data.id & 0xFF);
+                    puback_buf[4] = (msgid >> 8);
+                    puback_buf[5] = (msgid & 0xFF);
+                    puback_buf[6] = 0x00;
+                    mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, 
+                                         puback_buf, sizeof(puback_buf));
+                }
+            }
+            #endif
+            messages_processed++;
+        }
+    }
+    
+    return messages_processed;
+}
+
 int main(){
     stdio_init_all();
     sleep_ms(3000); // Provide time for serial monitor to connect
