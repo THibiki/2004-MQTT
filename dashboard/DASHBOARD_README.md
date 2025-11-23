@@ -2,9 +2,9 @@
 
 ## Quick Start (2 minutes)
 
-### Step 1: Navigate to Project Folder
+### Step 1: Navigate to Dashboard Folder
 ```bash
-cd C:\Users\tony9\Documents\GitHub\2004-MQTT
+cd <project-root>\dashboard
 ```
 
 ### Step 2: Create Virtual Environment (First Time Only)
@@ -65,7 +65,7 @@ Done! The dashboard will automatically connect and start displaying data from yo
 
 For first-time setup:
 ```bash
-cd C:\Users\tony9\Documents\GitHub\2004-MQTT
+cd <project-root>\dashboard
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
@@ -74,7 +74,7 @@ python dashboard_server.py
 
 For subsequent runs (after venv is created):
 ```bash
-cd C:\Users\tony9\Documents\GitHub\2004-MQTT
+cd <project-root>\dashboard
 venv\Scripts\activate
 python dashboard_server.py
 ```
