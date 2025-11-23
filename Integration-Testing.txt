@@ -1,0 +1,27 @@
+Integration Testing
+
+| ID | Test Case | Expected Result | Test Outcome | Tolerance |
+|---|---|---|---|---|
+| IT1 | QoS 0 - Successful message delivery - Sender sends a message to recipient | - Receiver gets exactly 1 message within 1 second - Topic name and payload match exactly the sender's PUBLISH. | Pass (done it once only via manual, automate it) | < xx out of 100 test cases, achieved a xx% of success > |
+| IT2 | QoS 1 - Successful message delivery | - Receiver gets QoS 1 and 1 PUBLISH with correct | Pass (done it once only via manual, automate it) | < xx out of 100 test cases, achieved a xx% of |
+| | | | |
+|---|---|---|---|
+| | - Sender sends a message to recipient and waits for acknowledgment<br>- Recipient returns with acknowledgment | MsgID<br>- Sender receives PUBACK within timeout window | success > |
+| IT3 | QoS 1 - Sender resend message to recipient after failing to receive acknowledgement<br>- Sender sends a message to recipient and waits for acknowledgment<br>- After timeout, sender does not receive acknowledgment from recipient<br>- Sender resends message with duplicate flag and waits for acknowledgment | - Sender retransmit PUBLISH with DUP = 1 after timeout.<br>- Receiver processes payload once only and sends PUBACK.<br>- Sender stop retries after receiving PUBACK. | < xx out of 100 test cases, achieved a xx% of success > |
+| IT4 | QoS 1 - Dropped Connection<br>- Sender sends a message to recipient and waits for acknowledgment<br>- Disconnect the client<br>- Reconnect the client<br>- After reconnection, sender will resend the message with the duplicate flag and waits for acknowledgment | - After reconnection, sender resends PUBLISH with DUP = 1.<br>- Receiver sends PUBACK<br>- Final delivery occurs exactly once. | < xx out of 100 test cases, achieved a xx% of success > |
+| IT5 | Successful Block Transfer<br>- Sender prepares a large payload and fragments the message before sending<br>- Gateway receives messages | - All fragments received and reassembled correctly → Checksum matches original<br>- Subscriber receives 1 | < xx out of 100 test cases, achieved a xx% of success > |
+| | | | |
+|---|---|---|---|
+| | in order and reassembles them into a complete message<br>• Gateway forwards reassembled message to subscriber | complete message, no duplicates. | |
+| IT6 | Successful Block Transfer with fragment loss<br>• Sender prepares a large payload and fragments the message before sending<br>• One fragment is lost during transmission<br>• Gateway detects the missing fragment when reassembly fails or incomplete fragment sequence.<br>• Sender timeout and retransmits the missing fragment.<br>• Gateway receives the retransmitted fragment and reassembles completed message with acknowledgement<br>• Gateway forwards reassembled message to subscriber | • Missing fragment detected. Sender retransmits only missing fragment<br>• Reassembly completes successfully. Final payload matches reference checksum. | < xx out of 100 test cases, achieved a xx% of success > |
+| IT7 | Successful Topic Registration<br>• Client sends REGISTER to Gateway<br>• Gateway forwards to broker | • Client receives REGACK with non-zero topic ID within 800 ms. | < xx out of 100 test cases, achieved a xx% of success > |
+| | | | | |
+|---|---|---|---|---|
+| | | Gateway responds with REGACK | | |
+| IT8 | Successful Topic Subscription - Client sends SUBSCRIBE to Gateway for a topic - Gateway forwards to broker - Gateway responds with SUBACK | - Client receives SUBACK with granted QoS and non-zero topic ID within 800 ms. | | < xx out of 100 test cases, achieved a xx% of success > |
+| IT9 | Auto-Reconnect WiFi - Manually off, wait and on connection - Observe reconnection and time | - Pico reconnects to WiFi and obtains DHCP IP within 3 to 7 seconds - MQTT-SN session automatically restored. | Pass![A black console output showing WiFi connection status. The text includes "WiFi disconnected", "Re-Connection Attempt #1", "Connecting to.", "Password length", "WiFi connection failed", "Status: connecting.", "Network Not Found", and "Installing network services."](console_output_wifi_reconnection.png) | 50 out of 50 test cases, achieved a 100% of success |
+| IT10 | Topic Registration after Disconnect | - REGISTER request succeeds, REGACK received within 800 ms - Assigned topic ID is stored and usable. | | < xx out of 100 test cases, achieved a xx% of success > |
+| IT11 | Successful WiFi Connection - Boot up Pico and execute WiFi connection function - Wait for connection to be established - Pico obtains IP address from DHCP - Pico is connected to WiFi | - Upon boot, Pico W connects to WiFi and obtain DHCP IP within 3 to 7 seconds | Pass![A black console output showing WiFi initialization and connection details. Text includes "Initializing WiFi", "WiFi initialized", "Connecting to", "Password length", "WiFi, connected in", "IP Address: 172.30.38.11", "Netmask: 255.255.255.240", and "Gateway: 172.30.38.1"](console_output_wifi_initialization.png) | 50 out of 50 test cases, achieved a 100% of success |
+| IT12 | Successful microSD Operations | Read and write test pattern matches original (no bit errors) | < xx out of 100 test cases, achieved a xx% of success > |
+|---|---|---|---|
+| | - Verify Pico can read and write to microSD card correctly | - LED blinks success pattern within 1 seconds. | |
