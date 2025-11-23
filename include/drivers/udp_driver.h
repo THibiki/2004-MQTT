@@ -2,7 +2,18 @@
 
 #ifndef UDP_DRIVER_H
 #define UDP_DRIVER_H
-#include <stdbool.h>
+
+#include <stdio.h>
+#include <string.h>
+#include <stdbool.h> //for debugging to see values
+#include <lwip/udp.h>
+#include <lwip/netif.h>
+
+#include "pico/stdlib.h"
+#include "pico/cyw43_arch.h"
+#include "pico/sem.h"
+#include "pico/mutex.h"
+
 
 // Create UDP socket and bind to local port
 int wifi_udp_create(uint16_t local_port);

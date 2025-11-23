@@ -9,16 +9,19 @@
 #include "ff.h"
 
 // Custom header files
-#include "network_config.h"
-#include "wifi_driver.h"
-#include "udp_driver.h"
-#include "network_errors.h"
-#include "mqttsn_client.h"
-#include "block_transfer.h"
-#include "sd_card.h"
+#include "config/network_config.h"
+#include "drivers/wifi_driver.h"
+#include "drivers/udp_driver.h"
+#include "net/network_errors.h"
+#include "protocol/mqttsn/mqttsn_client.h"
+#include "drivers/block_transfer.h"
+#include "drivers/sd_card.h"
 
 #define QOS_TOGGLE 22  // GP22
 #define BLOCK_TRANSFER 21  // GP22
+
+// Timestamp (ms) for rate-limiting WiFi status messages
+static uint32_t last_wifi_wait_print = 0;
 
 // Button debouncing
 static volatile uint32_t last_button_press = 0;
@@ -148,8 +151,6 @@ int main(){
         printf("[WARNING] Initial connection failed - will retry automatically\n");
     }
 
-    sleep_ms(2000);
-
     block_transfer_init();
 
     // Main Loop
@@ -187,7 +188,6 @@ int main(){
 
         // 3. WiFi Connected
         if (is_connected){
-            cyw43_arch_poll();
 
             if (!mqtt_demo_started){
                 printf("\n[MQTT-SN] Initializing MQTT-SN Demo...\n");
@@ -245,8 +245,11 @@ int main(){
             }
 
         } else {
-            if (now % 5000 < 100) {
+            // Prints every 5 seconds
+            uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+            if (now_ms - last_wifi_wait_print >= 5000) {
                 printf("[APP] Waiting for WiFi... (Status: %s)\n", wifi_get_status());
+                last_wifi_wait_print = now_ms;
             }
         }
 
@@ -260,9 +263,10 @@ int main(){
                 printf("Uptime: %lu seconds\n", (now - connection_start_time) / 1000);
             }
             last_status_print = get_absolute_time();
+            // Read statistics
+            sleep_ms(3000);
         }
 
-        cyw43_arch_poll();
         sleep_ms(10);
     }
 

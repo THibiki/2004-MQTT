@@ -3,16 +3,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h> //for debugging to see values
-#include <lwip/udp.h>
-#include <lwip/netif.h>
 
-#include "pico/stdlib.h"
-#include "pico/cyw43_arch.h"
-#include "pico/sem.h"
-#include "pico/mutex.h"
-
-#include "udp_driver.h"
-#include "network_errors.h"
+#include "drivers/udp_driver.h"
+#include "net/network_errors.h" 
 
 // UDP State
 static struct udp_pcb *udp_pcb = NULL;

@@ -6,9 +6,9 @@
 
 #include <stdio.h>
 #include <string.h>
-#include "pico/stdlib.h"
-#include "mqttsn_adapter.h"
-#include "network_config.h"
+#include <stdbool.h>
+#include "protocol/mqttsn/mqttsn_adapter.h"
+#include "config/network_config.h"
 
 #ifdef HAVE_PAHO
 #include "MQTTSNPacket.h"
@@ -217,9 +217,9 @@ int mqttsn_demo_send_test(const char *payload){
     }
 
     size_t len = strlen(payload);
-    uint32_t t0 = to_ms_since_boot(get_absolute_time());
+    uint32_t t0 = mqttsn_get_time_ms();
     int rc = mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, (const uint8_t*)payload, len);
-    uint32_t t1 = to_ms_since_boot(get_absolute_time());
+    uint32_t t1 = mqttsn_get_time_ms();
 
     if (rc == 0){
         printf("[MQTTSN] Sent %zu bytes to %s:%d (send_ms=%lums)\n", len, MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, (unsigned long)(t1 - t0));
