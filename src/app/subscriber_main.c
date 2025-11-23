@@ -199,6 +199,9 @@ int main() {
     
     // Main loop
     bool was_connected = false;
+    uint32_t last_keepalive = 0;
+    uint32_t last_status_check = 0;
+    uint32_t last_retx_request = 0;
     
     while (true) {
         wifi_auto_reconnect();
@@ -229,10 +232,15 @@ int main() {
                     
                     // Initialize SD card for saving received blocks
                     printf("[SUBSCRIBER] Initializing SD card...\n");
-                    if (sd_card_init() == 0) {
-                        printf("[SUBSCRIBER] ✓ SD card ready\n");
+                    if (sd_card_init_with_detection() == 0) {
+                        printf("[SUBSCRIBER] ✓ SD card hardware initialized\n");
+                        if (sd_card_mount_fat32() == 0) {
+                            printf("[SUBSCRIBER] ✓ SD card mounted and ready\n");
+                        } else {
+                            printf("[SUBSCRIBER] ⚠️  SD card mount failed (blocks won't be saved)\n");
+                        }
                     } else {
-                        printf("[SUBSCRIBER] ⚠️  SD card not available (blocks won't be saved)\n");
+                        printf("[SUBSCRIBER] ⚠️  SD card not detected (blocks won't be saved)\n");
                     }
                     
                     // Initialize block transfer system
@@ -288,6 +296,38 @@ int main() {
                     sleep_ms(10000);
                 }
             } else {
+                uint32_t now = to_ms_since_boot(get_absolute_time());
+                
+                // Send keepalive PINGREQ every 30 seconds
+                if (now - last_keepalive > 30000) {
+                    unsigned char pingreq[] = {0x02, 0x16};
+                    mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, 
+                                         pingreq, sizeof(pingreq));
+                    last_keepalive = now;
+                }
+                
+                // Check for block transfer timeout and print status every 10 seconds
+                if (now - last_status_check > 10000) {
+                    block_transfer_check_timeout();
+                    
+                    // Print status if transfer is active
+                    if (block_transfer_is_active()) {
+                        block_transfer_print_status();
+                    }
+                    
+                    last_status_check = now;
+                }
+                
+                // Request retransmission every 15 seconds if chunks are missing
+                if (block_transfer_is_active()) {
+                    int missing = block_transfer_get_missing_count();
+                    if (missing > 0 && (now - last_retx_request > 15000)) {
+                        printf("[SUBSCRIBER] 🔄 Requesting retransmission of %d missing chunks...\n", missing);
+                        block_transfer_request_missing_chunks();
+                        last_retx_request = now;
+                    }
+                }
+                
                 // Listen for incoming messages
                 unsigned char buf[512];
                 int rc = mqttsn_transport_receive(buf, sizeof(buf), 100);
@@ -302,8 +342,10 @@ int main() {
                         unsigned char pingresp[] = {0x02, 0x17};
                         mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, 
                                              pingresp, sizeof(pingresp));
+                    } else if (msg_type == 0x17) {  // PINGRESP
+                        // Received response to our PINGREQ - connection alive
                     } else if (msg_type == 0x18) {  // DISCONNECT
-                        printf("[SUBSCRIBER] ✗ Received DISCONNECT\n");
+                        printf("[SUBSCRIBER] ✗ Received DISCONNECT from gateway (keepalive timeout?)\n");
                         mqtt_subscriber_ready = false;
                         mqttsn_demo_close();
                     }

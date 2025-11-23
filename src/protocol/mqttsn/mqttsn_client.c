@@ -7,8 +7,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+#include "pico/stdlib.h"
 #include "protocol/mqttsn/mqttsn_adapter.h"
 #include "config/network_config.h"
+#include "drivers/block_transfer.h"
 
 #ifdef HAVE_PAHO
 #include "MQTTSNPacket.h"
@@ -22,6 +24,7 @@ static bool mqttsn_initialized = false;
 static bool mqttsn_connected = false;
 static unsigned short mqttsn_registered_topicid = 0;  // For pico/test
 static unsigned short mqttsn_chunks_topicid = 0;      // For pico/chunks
+static unsigned short mqttsn_retransmit_topicid = 0;  // For pico/retransmit
 static unsigned short mqttsn_msg_id = 1;
 static int current_qos = 0;  // Default to QoS 0
 
@@ -200,6 +203,35 @@ int mqttsn_demo_init(uint16_t local_port, const char *client_id){
             }
         }
     }
+    
+    // Also register pico/retransmit topic for retransmission requests
+    printf("[MQTTSN] Registering topic 'pico/retransmit' for retransmission...\n");
+    const char *retx_topic = "pico/retransmit";
+    MQTTSNString retx_topic_string = MQTTSNString_initializer;
+    retx_topic_string.cstring = (char*)retx_topic;
+    retx_topic_string.lenstring.len = strlen(retx_topic);
+    
+    len = MQTTSNSerialize_register(buf, sizeof(buf), 0, mqttsn_msg_id, &retx_topic_string);
+    if (len > 0) {
+        s = mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, buf, len);
+        if (s == 0) {
+            r = mqttsn_transport_receive(buf, sizeof(buf), 5000);
+            if (r > 0) {
+                unsigned short retx_topicid = 0;
+                unsigned short retx_msgid = 0;
+                unsigned char retx_rc = 0;
+                if (MQTTSNDeserialize_regack(&retx_topicid, &retx_msgid, &retx_rc, buf, r) == 1) {
+                    if (retx_rc == MQTTSN_RC_ACCEPTED) {
+                        mqttsn_retransmit_topicid = retx_topicid;
+                        printf("[MQTTSN] ✓ Topic 'pico/retransmit' registered (TopicID=%u)\n", retx_topicid);
+                        mqttsn_msg_id++;
+                    } else {
+                        printf("[MQTTSN] ⚠ Topic 'pico/retransmit' registration rejected (code=%d)\n", retx_rc);
+                    }
+                }
+            }
+        }
+    }
 #else
     printf("[MQTTSN] Paho not available at build time\n");
 #endif
@@ -288,6 +320,8 @@ int mqttsn_demo_publish_name(const char *topicname, const uint8_t *payload, int 
     unsigned short topic_id_to_use = 0;
     if (strcmp(topicname, "pico/chunks") == 0) {
         topic_id_to_use = mqttsn_chunks_topicid;
+    } else if (strcmp(topicname, "pico/retransmit") == 0) {
+        topic_id_to_use = mqttsn_retransmit_topicid;
     } else if (strcmp(topicname, "pico/test") == 0 || strcmp(topicname, "pico/block") == 0) {
         topic_id_to_use = mqttsn_registered_topicid;
     } else {
@@ -347,18 +381,28 @@ int mqttsn_demo_publish_name(const char *topicname, const uint8_t *payload, int 
     
     // Wait for acknowledgment for QoS 1 and 2
     if (current_qos == 1) {
-        // Wait for PUBACK
+        // Wait for PUBACK, but process other messages too
         printf("[MQTTSN] Waiting for PUBACK (QoS 1)...\n");
-        int r = mqttsn_transport_receive(buf, sizeof(buf), 5000);
-        if (r > 0) {
+        bool puback_received = false;
+        uint32_t wait_start = to_ms_since_boot(get_absolute_time());
+        
+        while (!puback_received && (to_ms_since_boot(get_absolute_time()) - wait_start) < 5000) {
+            int r = mqttsn_transport_receive(buf, sizeof(buf), 100);
+            if (r <= 0) {
+                continue;  // No message, keep waiting
+            }
+            
             printf("[DEBUG] Received %d bytes: ", r);
             for(int i = 0; i < r && i < 20; i++) {
                 printf("%02x ", buf[i]);
             }
             printf("\n");
             
+            if (r < 2) continue;
+            uint8_t msg_type = buf[1];
+            
             // PUBACK format: [Length][0x0D][TopicId MSB][TopicId LSB][MsgId MSB][MsgId LSB][ReturnCode]
-            if (r >= 7 && buf[1] == 0x0D) {  // 0x0D = PUBACK
+            if (r >= 7 && msg_type == 0x0D) {  // 0x0D = PUBACK
                 unsigned short ack_topicid = (buf[2] << 8) | buf[3];
                 unsigned short ack_msgid = (buf[4] << 8) | buf[5];
                 unsigned char return_code = buf[6];
@@ -366,14 +410,48 @@ int mqttsn_demo_publish_name(const char *topicname, const uint8_t *payload, int 
                 if (return_code == 0x00) {
                     printf("[MQTTSN] ✓ PUBACK received (TopicID=%u, MsgID=%u)\n", 
                            ack_topicid, ack_msgid);
+                    puback_received = true;
                 } else {
                     printf("[MQTTSN] ✗ PUBACK with error code=%d\n", return_code);
                     return -6;
                 }
+            } else if (msg_type == 0x0C) {  // PUBLISH - forward to main loop handler
+                printf("[MQTTSN] ✓ Received PUBLISH while waiting for PUBACK - processing...\n");
+                
+                #ifdef HAVE_PAHO
+                unsigned char dup, retained;
+                unsigned short recv_msgid;
+                int qos;
+                MQTTSN_topicid topic;
+                unsigned char *payload_ptr;
+                int payloadlen_recv;
+                
+                if (MQTTSNDeserialize_publish(&dup, &qos, &retained, &recv_msgid, 
+                                             &topic, &payload_ptr, &payloadlen_recv, 
+                                             buf, r) == 1) {
+                    printf("[MQTTSN] PUBLISH decoded: TopicID=%u, QoS=%d, PayloadLen=%d\n",
+                           topic.data.id, qos, payloadlen_recv);
+                    
+                    // Check if this is a RETX request
+                    if (payloadlen_recv >= 5 && strncmp((char*)payload_ptr, "RETX:", 5) == 0) {
+                        printf("[PUBLISHER] 📩 RETX request during publish wait!\n");
+                        printf("[PUBLISHER] Payload: %.*s\n", payloadlen_recv, payload_ptr);
+                        
+                        char request_msg[256];
+                        int copy_len = (payloadlen_recv < 255) ? payloadlen_recv : 255;
+                        memcpy(request_msg, payload_ptr, copy_len);
+                        request_msg[copy_len] = '\0';
+                        
+                        block_transfer_handle_retransmit_request(request_msg);
+                    }
+                }
+                #endif
             } else {
-                printf("[MQTTSN] ✗ Expected PUBACK but received different message\n");
+                printf("[MQTTSN] Received message type 0x%02X while waiting for PUBACK\n", msg_type);
             }
-        } else {
+        }
+        
+        if (!puback_received) {
             printf("[MQTTSN] ✗ PUBACK not received (timeout)\n");
             return -7;
         }
@@ -484,8 +562,51 @@ int mqttsn_demo_process_once(uint32_t timeout_ms){
                     return -1;
                     
                 case 0x0C: // PUBLISH
-                    // Handle incoming publish
-                    printf("[MQTTSN] Received PUBLISH message\n");
+                    #ifdef HAVE_PAHO
+                    {
+                        // Parse PUBLISH message
+                        unsigned char dup, retained;
+                        unsigned short msgid;
+                        int qos;
+                        MQTTSN_topicid topic;
+                        unsigned char *payload;
+                        int payloadlen;
+                        
+                        int parse_rc = MQTTSNDeserialize_publish(&dup, &qos, &retained, &msgid, 
+                                                                 &topic, &payload, &payloadlen, 
+                                                                 buf, rc);
+                        if (parse_rc == 1) {
+                            printf("[MQTTSN] Received PUBLISH: TopicID=%u, QoS=%d, MsgID=%u, PayloadLen=%d\n",
+                                   topic.data.id, qos, msgid, payloadlen);
+                            
+                            // Print payload as text (if printable)
+                            printf("[MQTTSN] Payload: ");
+                            for (int i = 0; i < payloadlen && i < 100; i++) {
+                                if (payload[i] >= 32 && payload[i] < 127) {
+                                    printf("%c", payload[i]);
+                                } else {
+                                    printf(".");
+                                }
+                            }
+                            if (payloadlen > 100) printf("...");
+                            printf("\n");
+                            
+                            // Send PUBACK for QoS 1
+                            if (qos == 1) {
+                                unsigned char puback_buf[7];
+                                puback_buf[0] = 7;
+                                puback_buf[1] = 0x0D;  // PUBACK
+                                puback_buf[2] = (topic.data.id >> 8);
+                                puback_buf[3] = (topic.data.id & 0xFF);
+                                puback_buf[4] = (msgid >> 8);
+                                puback_buf[5] = (msgid & 0xFF);
+                                puback_buf[6] = 0x00;  // Return code (accepted)
+                                mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, 
+                                                     puback_buf, sizeof(puback_buf));
+                            }
+                        }
+                    }
+                    #endif
                     break;
                     
                 case 0x16: // PINGREQ

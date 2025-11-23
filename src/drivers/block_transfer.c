@@ -12,6 +12,30 @@
 static block_assembly_t current_block = {0};
 static uint16_t next_block_id = 1;
 
+// Publisher-side: Store last sent block for retransmission
+typedef struct {
+    uint16_t block_id;
+    uint8_t *data;          // Changed to non-const (we own this memory)
+    size_t data_len;
+    uint16_t total_parts;
+    const char *topic;
+    uint8_t qos;
+    bool active;
+    bool owns_data;         // Track if we allocated the data buffer
+} sender_block_cache_t;
+
+static sender_block_cache_t sender_cache = {0};
+
+// Free cached block data
+static void sender_cache_free(void) {
+    if (sender_cache.active && sender_cache.owns_data && sender_cache.data) {
+        free(sender_cache.data);
+        sender_cache.data = NULL;
+    }
+    sender_cache.active = false;
+    sender_cache.owns_data = false;
+}
+
 // map current calls of mqttsn_publish() to new mqttsn publish call method (mqttsn_demo_publish_name)
 // This function respects the QoS parameter by temporarily setting current_qos
 static int mqttsn_publish(const char *topic, const uint8_t *data, size_t len, uint8_t qos){
@@ -148,6 +172,21 @@ int send_block_transfer_qos(const char *topic, const uint8_t *data, size_t data_
     printf("\n=== Starting block transfer (QoS %d) ===\n", qos);
     printf("Block ID: %d, Data size: %zu bytes, Chunks: %d\n", block_id, data_len, total_parts);
     
+    // Free any previously cached block data
+    sender_cache_free();
+    
+    // Cache block data for potential retransmission
+    // NOTE: We store the pointer but don't own it yet
+    // The caller will set owns_data=true if we should keep it
+    sender_cache.block_id = block_id;
+    sender_cache.data = (uint8_t*)data;  // Cast away const
+    sender_cache.data_len = data_len;
+    sender_cache.total_parts = total_parts;
+    sender_cache.topic = topic;
+    sender_cache.qos = qos;
+    sender_cache.active = true;
+    sender_cache.owns_data = false;  // Caller will set this
+    
     // Send each chunk
     for (uint16_t part = 1; part <= total_parts; part++) {
         size_t offset = (part - 1) * chunk_data_size;
@@ -265,7 +304,145 @@ int send_block_transfer_qos(const char *topic, const uint8_t *data, size_t data_
     }
     
     printf("Block transfer completed: %d chunks sent\n", total_parts);
+    printf("[PUBLISHER] ℹ️  Block data cached for potential retransmission requests\n");
     return 0;
+}
+
+// Parse and handle retransmission request from subscriber
+// Message format: "RETX:BLOCK=1,CHUNKS=10-15,20,25-30"
+int block_transfer_handle_retransmit_request(const char *request_msg) {
+    if (!sender_cache.active) {
+        printf("[RETX] No active block to retransmit\n");
+        return -1;
+    }
+    
+    // Parse the message
+    int requested_block_id = 0;
+    const char *chunks_str = NULL;
+    
+    // Extract block ID
+    if (sscanf(request_msg, "RETX:BLOCK=%d,CHUNKS=", &requested_block_id) != 1) {
+        printf("[RETX] Failed to parse request message\n");
+        return -2;
+    }
+    
+    if (requested_block_id != sender_cache.block_id) {
+        printf("[RETX] Block ID mismatch: requested=%d, cached=%d\n", 
+               requested_block_id, sender_cache.block_id);
+        return -3;
+    }
+    
+    // Find the chunks list
+    chunks_str = strstr(request_msg, "CHUNKS=");
+    if (!chunks_str) {
+        printf("[RETX] No chunks specified in request\n");
+        return -4;
+    }
+    chunks_str += 7;  // Skip "CHUNKS="
+    
+    printf("\n========================================\n");
+    printf("[RETX] 🔄 RETRANSMISSION REQUEST RECEIVED\n");
+    printf("[RETX] Block ID: %d (cached: %d)\n", requested_block_id, sender_cache.block_id);
+    printf("[RETX] Cached data available: %s (%zu bytes)\n", 
+           sender_cache.data ? "YES" : "NO", sender_cache.data_len);
+    printf("[RETX] Topic: %s, QoS: %d\n", sender_cache.topic, sender_cache.qos);
+    printf("[RETX] Missing chunks: %s\n", chunks_str);
+    printf("========================================\n");
+    
+    // Parse chunk ranges and resend (e.g., "10-15,20,25-30")
+    char chunks_copy[256];
+    strncpy(chunks_copy, chunks_str, sizeof(chunks_copy) - 1);
+    chunks_copy[sizeof(chunks_copy) - 1] = '\0';
+    
+    size_t chunk_data_size = BLOCK_CHUNK_SIZE - sizeof(block_header_t);
+    int chunks_resent = 0;
+    
+    char *token = strtok(chunks_copy, ",");
+    while (token != NULL) {
+        int start, end;
+        
+        // Check if it's a range (e.g., "10-15")
+        if (strchr(token, '-')) {
+            if (sscanf(token, "%d-%d", &start, &end) == 2) {
+                // Resend range
+                for (int part = start; part <= end && part <= sender_cache.total_parts; part++) {
+                    size_t offset = (part - 1) * chunk_data_size;
+                    size_t chunk_len = (offset + chunk_data_size > sender_cache.data_len) ? 
+                                      (sender_cache.data_len - offset) : chunk_data_size;
+                    
+                    // Create packet with header + data
+                    uint8_t packet[BLOCK_CHUNK_SIZE];
+                    block_header_t *header = (block_header_t*)packet;
+                    
+                    header->block_id = sender_cache.block_id;
+                    header->part_num = part;
+                    header->total_parts = sender_cache.total_parts;
+                    header->data_len = chunk_len;
+                    
+                    memcpy(packet + sizeof(block_header_t), sender_cache.data + offset, chunk_len);
+                    
+                    size_t packet_size = sizeof(block_header_t) + chunk_len;
+                    
+                    // Use QoS 0 for retransmission to avoid blocking
+                    if (mqttsn_publish(sender_cache.topic, packet, packet_size, 0) == MQTTSN_OK) {
+                        chunks_resent++;
+                        // Only log every 10th chunk to reduce spam
+                        if (chunks_resent % 10 == 0 || chunks_resent == 1) {
+                            printf("[RETX] ✓ Sent %d chunks (last: %d)...\n", chunks_resent, part);
+                        }
+                    } else {
+                        printf("[RETX] ✗ Failed to send chunk %d\n", part);
+                    }
+                    
+                    // Increase delay to avoid overwhelming gateway/network
+                    sleep_ms(15);
+                }
+            }
+        } else {
+            // Single chunk
+            if (sscanf(token, "%d", &start) == 1) {
+                int part = start;
+                if (part >= 1 && part <= sender_cache.total_parts) {
+                    size_t offset = (part - 1) * chunk_data_size;
+                    size_t chunk_len = (offset + chunk_data_size > sender_cache.data_len) ? 
+                                      (sender_cache.data_len - offset) : chunk_data_size;
+                    
+                    uint8_t packet[BLOCK_CHUNK_SIZE];
+                    block_header_t *header = (block_header_t*)packet;
+                    
+                    header->block_id = sender_cache.block_id;
+                    header->part_num = part;
+                    header->total_parts = sender_cache.total_parts;
+                    header->data_len = chunk_len;
+                    
+                    memcpy(packet + sizeof(block_header_t), sender_cache.data + offset, chunk_len);
+                    
+                    size_t packet_size = sizeof(block_header_t) + chunk_len;
+                    
+                    // Use QoS 0 for retransmission to avoid blocking
+                    if (mqttsn_publish(sender_cache.topic, packet, packet_size, 0) == MQTTSN_OK) {
+                        chunks_resent++;
+                        // Only log every 10th chunk to reduce spam
+                        if (chunks_resent % 10 == 0 || chunks_resent == 1) {
+                            printf("[RETX] ✓ Sent %d chunks (last: %d)...\n", chunks_resent, part);
+                        }
+                    } else {
+                        printf("[RETX] ✗ Failed to send chunk %d\n", part);
+                    }
+                    
+                    // Increase delay to avoid overwhelming gateway/network
+                    sleep_ms(15);
+                }
+            }
+        }
+        
+        token = strtok(NULL, ",");
+    }
+    
+    printf("\n[RETX] ========================================\n");
+    printf("[RETX] ✅ RETRANSMISSION COMPLETE: %d chunks resent (QoS 0)\n", chunks_resent);
+    printf("[RETX] ========================================\n\n");
+    return chunks_resent;
 }
 
 // Send an image file from SD card using block transfer
@@ -358,12 +535,23 @@ int send_image_file_qos(const char *topic, const char *filename, uint8_t qos) {
     // Send via block transfer with specified QoS
     ret = send_block_transfer_qos(topic, image_buffer, image_size, qos);
     
-    free(image_buffer);
+    // DON'T free the buffer yet - we need it for retransmission!
+    // The sender_cache now owns this buffer and will free it when:
+    // 1. A new block transfer starts (replaces cache)
+    // 2. Transfer is confirmed complete
+    // For now, just mark that sender_cache owns this memory
+    sender_cache.owns_data = true;
     
     if (ret == 0) {
         printf("✅ Image transfer completed - saved to GitHub repo\n");
+        printf("📦 Block data cached in memory for retransmission (%.2f KB)\n", 
+               image_size / 1024.0);
     } else {
         printf("❌ Image transfer failed\n");
+        // On failure, free the buffer immediately
+        free(image_buffer);
+        sender_cache.active = false;
+        sender_cache.owns_data = false;
     }
     
     return ret;
@@ -457,15 +645,21 @@ void process_block_chunk(const uint8_t *data, size_t len) {
             current_block.total_length = buffer_offset + chunk_data_len;
         }
         
-        // Print progress every 50 chunks
+        // Print progress every 50 chunks or at milestones
         if (current_block.received_parts % 50 == 0 || current_block.received_parts == current_block.total_parts) {
-            printf("Progress: %d/%d\n", current_block.received_parts, current_block.total_parts);
+            uint16_t missing = current_block.total_parts - current_block.received_parts;
+            printf("📊 Progress: %d/%d (%.1f%%) | Missing: %d chunks\n", 
+                   current_block.received_parts, current_block.total_parts,
+                   (float)current_block.received_parts * 100.0 / current_block.total_parts,
+                   missing);
         }
         
         // Check if block is complete
         if (current_block.received_parts == current_block.total_parts) {
-            printf("\n=== BLOCK TRANSFER COMPLETE ===\n");
+            printf("\n=== ✅ BLOCK TRANSFER COMPLETE ===\n");
             printf("Block ID: %d\n", current_block.block_id);
+            printf("Status: SUCCESS - All chunks received\n");
+            printf("Chunks: %d/%d (100%%)\n", current_block.received_parts, current_block.total_parts);
             printf("Total size: %d bytes (%.2f KB)\n", current_block.total_length, 
                    current_block.total_length / 1024.0);
             
@@ -572,12 +766,156 @@ bool block_transfer_is_active(void) {
 
 void block_transfer_check_timeout(void) {
     // Check for block assembly timeout (30 seconds)
-    if (current_block.block_id != 0) {
+    // Mark transfer as finished to enable retransmission
+    if (current_block.block_id != 0 && !current_block.transfer_finished) {
         uint32_t now = to_ms_since_boot(get_absolute_time());
         if ((now - current_block.last_update) > 30000) {
-            printf("Block assembly timeout for block %d (received %d/%d parts)\n",
-                   current_block.block_id, current_block.received_parts, current_block.total_parts);
-            current_block.block_id = 0; // Reset
+            uint16_t missing_chunks = current_block.total_parts - current_block.received_parts;
+            printf("\n=== ⚠️  INITIAL TRANSFER COMPLETE (TIMEOUT) ===\n");
+            printf("Block ID: %d\n", current_block.block_id);
+            printf("Status: Initial transmission finished\n");
+            printf("Chunks received: %d/%d (%.1f%%)\n",
+                   current_block.received_parts, current_block.total_parts,
+                   (float)current_block.received_parts * 100.0 / current_block.total_parts);
+            printf("Missing chunks: %d\n", missing_chunks);
+            
+            current_block.transfer_finished = true;  // Enable retransmission requests
+            
+            // List missing chunk numbers (up to first 20)
+            printf("Missing chunk IDs: ");
+            int shown = 0;
+            for (uint16_t i = 0; i < current_block.total_parts && shown < 20; i++) {
+                if (!current_block.received_mask[i]) {
+                    printf("%d ", i + 1);
+                    shown++;
+                }
+            }
+            if (missing_chunks > 20) {
+                printf("... (%d more)", missing_chunks - 20);
+            }
+            printf("\n");
+            printf("🔄 Will continue requesting retransmission...\n");
+            
+            // DON'T reset - keep trying to get missing chunks
+            // Update last_update to prevent spam
+            current_block.last_update = now;
         }
+    }
+}
+
+void block_transfer_print_status(void) {
+    if (current_block.block_id == 0) {
+        printf("[Block Transfer] No active transfer\n");
+        return;
+    }
+    
+    uint16_t missing = current_block.total_parts - current_block.received_parts;
+    uint32_t elapsed_sec = (to_ms_since_boot(get_absolute_time()) - current_block.last_update) / 1000;
+    
+    printf("\n[Block Transfer Status]\n");
+    printf("  Block ID: %d\n", current_block.block_id);
+    printf("  Progress: %d/%d chunks (%.1f%%)\n", 
+           current_block.received_parts, current_block.total_parts,
+           (float)current_block.received_parts * 100.0 / current_block.total_parts);
+    printf("  Missing: %d chunks\n", missing);
+    printf("  Time since last chunk: %lu seconds\n", elapsed_sec);
+    
+    if (missing > 0 && missing <= 20) {
+        printf("  Missing chunk IDs: ");
+        for (uint16_t i = 0; i < current_block.total_parts; i++) {
+            if (!current_block.received_mask[i]) {
+                printf("%d ", i + 1);
+            }
+        }
+        printf("\n");
+    }
+}
+
+int block_transfer_get_missing_count(void) {
+    if (current_block.block_id == 0) {
+        return 0;
+    }
+    return current_block.total_parts - current_block.received_parts;
+}
+
+// Request retransmission of missing chunks
+// Returns 0 on success, negative on error
+int block_transfer_request_missing_chunks(void) {
+    if (current_block.block_id == 0) {
+        printf("[RETX] No active transfer\n");
+        return -1;
+    }
+    
+    if (!current_block.transfer_finished) {
+        // Don't request retransmission during initial transfer
+        return 0;
+    }
+    
+    uint16_t missing = current_block.total_parts - current_block.received_parts;
+    if (missing == 0) {
+        printf("[RETX] No missing chunks\n");
+        return 0;
+    }
+    
+    // Build retransmit request message with missing chunk ranges
+    char retx_msg[256];
+    int offset = snprintf(retx_msg, sizeof(retx_msg), 
+                         "RETX:BLOCK=%d,CHUNKS=", current_block.block_id);
+    
+    // Find missing chunks and encode as ranges (e.g., "10-15,20,25-30")
+    int chunks_added = 0;
+    uint16_t range_start = 0;
+    uint16_t range_end = 0;
+    bool in_range = false;
+    
+    for (uint16_t i = 0; i < current_block.total_parts && chunks_added < 50; i++) {
+        if (!current_block.received_mask[i]) {
+            if (!in_range) {
+                range_start = i + 1;
+                range_end = i + 1;
+                in_range = true;
+            } else {
+                range_end = i + 1;
+            }
+        } else {
+            if (in_range) {
+                // End of range, add to message
+                if (range_start == range_end) {
+                    offset += snprintf(retx_msg + offset, sizeof(retx_msg) - offset,
+                                     "%d,", range_start);
+                } else {
+                    offset += snprintf(retx_msg + offset, sizeof(retx_msg) - offset,
+                                     "%d-%d,", range_start, range_end);
+                }
+                chunks_added++;
+                in_range = false;
+            }
+        }
+    }
+    
+    // Handle final range
+    if (in_range) {
+        if (range_start == range_end) {
+            offset += snprintf(retx_msg + offset, sizeof(retx_msg) - offset,
+                             "%d", range_start);
+        } else {
+            offset += snprintf(retx_msg + offset, sizeof(retx_msg) - offset,
+                             "%d-%d", range_start, range_end);
+        }
+    } else if (offset > 0 && retx_msg[offset - 1] == ',') {
+        retx_msg[offset - 1] = '\0';  // Remove trailing comma
+    }
+    
+    printf("[RETX] Requesting %d missing chunks: %s\n", missing, retx_msg);
+    
+    // Send retransmit request with QoS 0 (fire-and-forget) to avoid blocking
+    int ret = mqttsn_publish("pico/retransmit", (uint8_t*)retx_msg, strlen(retx_msg), 0);
+    
+    if (ret == MQTTSN_OK) {
+        printf("[RETX] Request sent successfully\n");
+        return 0;
+    } else {
+        printf("[RETX] Failed to send request\n");
+        return -2;
     }
 }

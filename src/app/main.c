@@ -14,8 +14,14 @@
 #include "drivers/udp_driver.h"
 #include "net/network_errors.h"
 #include "protocol/mqttsn/mqttsn_client.h"
+#include "protocol/mqttsn/mqttsn_adapter.h"
 #include "drivers/block_transfer.h"
 #include "drivers/sd_card.h"
+
+#ifdef HAVE_PAHO
+#include "MQTTSNPacket.h"
+#include "MQTTSNPublish.h"
+#endif
 
 #define QOS_TOGGLE 22  // GP22
 #define BLOCK_TRANSFER 21  // GP22
@@ -157,6 +163,7 @@ int main(){
     bool was_connected = wifi_is_connected();
     absolute_time_t last_status_print = get_absolute_time();
     bool mqtt_demo_started = false;
+    bool subscribed_to_retransmit = false;
     uint32_t last_publish = 0;
     uint32_t connection_start_time = 0;
 
@@ -196,23 +203,111 @@ int main(){
                 // Modify mqttsn_client.c to accept client ID parameter
                 if (mqttsn_demo_init(0, "pico_w_publisher") == 0) {
                     printf("[MQTT-SN] ✓ MQTT-SN Demo initialized successfully\n");
+                    
+                    // Subscribe to retransmit requests from subscriber
+                    printf("[MQTT-SN] Subscribing to retransmit topic...\n");
+                    unsigned short retx_topicid = 0;
+                    int sub_ret = mqttsn_demo_subscribe("pico/retransmit", 200, &retx_topicid);
+                    if (sub_ret > 0) {
+                        printf("[MQTT-SN] ✓ Subscribed to 'pico/retransmit' (TopicID=%u)\n", retx_topicid);
+                        subscribed_to_retransmit = true;
+                    } else {
+                        printf("[MQTT-SN] ⚠️  Failed to subscribe to retransmit topic\n");
+                    }
+                    
                     mqtt_demo_started = true;
                 } else {
                     printf("[MQTT-SN] ✗ MQTT-SN Demo initialization failed, retrying...\n");
                     sleep_ms(10000);
                 }
             } else {
-                // Process incoming MQTT-SN messages
-                int processed = mqttsn_demo_process_once(100);
-                if (processed > 0) {
-                    printf("[MQTTSN] Processed incoming message (%d bytes)\n", processed);
-                } else if (processed == -1) {
-                    printf("[MQTTSN] Connection lost - will reconnect...\n");
-                    mqtt_demo_started = false;
-                    mqttsn_demo_close();
-                    sleep_ms(5000);
-                    continue;
-                }
+                // Process ALL incoming MQTT-SN messages - check multiple times
+                // Use shorter timeout to process messages quickly
+                for (int i = 0; i < 10; i++) {
+                    unsigned char recv_buf[256];
+                    int recv_rc = mqttsn_transport_receive(recv_buf, sizeof(recv_buf), 5);
+                    
+                    if (recv_rc <= 0 || recv_rc < 2) {
+                        break;  // No more messages
+                    }
+                    uint8_t msg_type = recv_buf[1];
+                    
+                    // Debug: show what we received with hex dump
+                    printf("[PUBLISHER] Received message type=0x%02X, length=%d: ", msg_type, recv_rc);
+                    for (int i = 0; i < (recv_rc < 20 ? recv_rc : 20); i++) {
+                        printf("%02X ", recv_buf[i]);
+                    }
+                    printf("\n");
+                    
+                    if (msg_type == 0x0C) {  // PUBLISH
+                        #ifdef HAVE_PAHO
+                        unsigned char dup, retained;
+                        unsigned short msgid;
+                        int qos;
+                        MQTTSN_topicid topic;
+                        unsigned char *payload;
+                        int payloadlen;
+                        
+                        int deserialize_result = MQTTSNDeserialize_publish(&dup, &qos, &retained, &msgid, 
+                                                     &topic, &payload, &payloadlen, 
+                                                     recv_buf, recv_rc);
+                        
+                        printf("[PUBLISHER] Deserialize result: %d\n", deserialize_result);
+                        
+                        if (deserialize_result == 1) {
+                            
+                            printf("[PUBLISHER] PUBLISH decoded: TopicID=%u, QoS=%d, PayloadLen=%d\n",
+                                   topic.data.id, qos, payloadlen);
+                            
+                            // Check if this is a retransmit request
+                            if (payloadlen >= 5 && strncmp((char*)payload, "RETX:", 5) == 0) {
+                                printf("\n[PUBLISHER] 📩 Retransmit request received!\n");
+                                printf("[PUBLISHER] Payload: %.*s\n", payloadlen, payload);
+                                
+                                // Null-terminate payload for string processing
+                                char request_msg[256];
+                                int copy_len = (payloadlen < 255) ? payloadlen : 255;
+                                memcpy(request_msg, payload, copy_len);
+                                request_msg[copy_len] = '\0';
+                                
+                                // Handle the retransmit request
+                                block_transfer_handle_retransmit_request(request_msg);
+                            } else {
+                                printf("[PUBLISHER] Regular message (not RETX): %.*s\n", 
+                                       payloadlen < 50 ? payloadlen : 50, payload);
+                            }
+                            
+                            // Send PUBACK for QoS 1
+                            if (qos == 1) {
+                                unsigned char puback_buf[7];
+                                puback_buf[0] = 7;
+                                puback_buf[1] = 0x0D;
+                                puback_buf[2] = (topic.data.id >> 8);
+                                puback_buf[3] = (topic.data.id & 0xFF);
+                                puback_buf[4] = (msgid >> 8);
+                                puback_buf[5] = (msgid & 0xFF);
+                                puback_buf[6] = 0x00;
+                                mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, 
+                                                     puback_buf, sizeof(puback_buf));
+                                printf("[PUBLISHER] PUBACK sent for MsgID=%u\n", msgid);
+                            }
+                        } else {
+                            printf("[PUBLISHER] Failed to deserialize PUBLISH\n");
+                        }
+                        #endif
+                    } else if (msg_type == 0x16) {  // PINGREQ
+                        unsigned char pingresp[] = {0x02, 0x17};
+                        mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, 
+                                             pingresp, sizeof(pingresp));
+                    } else if (msg_type == 0x18) {  // DISCONNECT
+                        printf("[MQTTSN] Connection lost - will reconnect...\n");
+                        mqtt_demo_started = false;
+                        subscribed_to_retransmit = false;
+                        mqttsn_demo_close();
+                        sleep_ms(5000);
+                        continue;
+                    }
+                }  // End of receive loop
 
                 // Periodically publish every 5 seconds
                 uint32_t now_ms = to_ms_since_boot(get_absolute_time());

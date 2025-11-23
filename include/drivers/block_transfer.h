@@ -26,6 +26,7 @@ typedef struct {
     uint8_t *data_buffer;   // Buffer to store reassembled data
     uint32_t total_length;  // Total length of complete message
     uint32_t last_update;   // Timestamp of last received part
+    bool transfer_finished; // True when initial transfer completes (timeout or all received)
 } block_assembly_t;
 
 // Block transfer functions
@@ -38,5 +39,9 @@ void process_block_chunk(const uint8_t *data, size_t len);
 void generate_large_message(char *buffer, size_t size);
 bool block_transfer_is_active(void);
 void block_transfer_check_timeout(void);
+void block_transfer_print_status(void);
+int block_transfer_request_missing_chunks(void);
+int block_transfer_get_missing_count(void);
+int block_transfer_handle_retransmit_request(const char *request_msg);
 
 #endif // BLOCK_TRANSFER_H
