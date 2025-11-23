@@ -5,12 +5,12 @@
 #include "pico/cyw43_arch.h"
 #include "hardware/gpio.h"
 
-#include "network_config.h"
-#include "wifi_driver.h"
-#include "mqttsn_client.h"
-#include "mqttsn_adapter.h"
-#include "block_transfer.h"
-#include "sd_card.h"
+#include "config/network_config.h"
+#include "drivers/wifi_driver.h"
+#include "protocol/mqttsn/mqttsn_client.h"
+#include "protocol/mqttsn/mqttsn_adapter.h"
+#include "drivers/block_transfer.h"
+#include "drivers/sd_card.h"
 
 #ifdef HAVE_PAHO
 #include "MQTTSNPacket.h"
