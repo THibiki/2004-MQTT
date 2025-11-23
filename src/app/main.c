@@ -190,18 +190,15 @@ int main(){
         if (is_connected){
 
             if (!mqtt_demo_started){
-                printf("\n[TEST] Initializing MQTT-SN client...\n");
-                printf("[DEBUG] Using gateway: %s:%d\n", MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT);
-                printf("[INFO] Initial QoS level: %d\n", mqttsn_get_qos());
+                printf("\n[MQTT-SN] Initializing MQTT-SN Demo...\n");
                 
-                if (mqttsn_demo_init(0) == 0){
-                    printf("[TEST] ✓✓✓ SUCCESS: MQTT-SN client fully initialized and connected ✓✓✓\n");
+                // Give publisher a unique client ID
+                // Modify mqttsn_client.c to accept client ID parameter
+                if (mqttsn_demo_init(0, "pico_w_publisher") == 0) {
+                    printf("[MQTT-SN] ✓ MQTT-SN Demo initialized successfully\n");
                     mqtt_demo_started = true;
-                    last_publish = to_ms_since_boot(get_absolute_time());
-                    printf("[MQTTSN] Ready to publish with QoS %d\n", mqttsn_get_qos());
                 } else {
-                    printf("[TEST] ✗ FAILED: MQTT-SN initialization failed\n");
-                    printf("[INFO] Will retry in 10 seconds...\n");
+                    printf("[MQTT-SN] ✗ MQTT-SN Demo initialization failed, retrying...\n");
                     sleep_ms(10000);
                 }
             } else {
