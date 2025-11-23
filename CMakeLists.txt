@@ -29,16 +29,21 @@ if (PAHO_DIR)
     file(GLOB PAHO_MQTTSN_PACKET_SRCS "${PAHO_DIR}/MQTTSNPacket/src/*.c")
     file(GLOB PAHO_MQTTSN_CLIENT_SRCS "${PAHO_DIR}/MQTTSNClient/src/*.c")
 
-    add_library(mqttsn_paho STATIC
-        ${PAHO_MQTTSN_PACKET_SRCS}
-        ${PAHO_MQTTSN_CLIENT_SRCS}
-    )
+    if (PAHO_MQTTSN_PACKET_SRCS OR PAHO_MQTTSN_CLIENT_SRCS)
+        add_library(mqttsn_paho STATIC
+            ${PAHO_MQTTSN_PACKET_SRCS}
+            ${PAHO_MQTTSN_CLIENT_SRCS}
+        )
 
-    target_include_directories(mqttsn_paho PUBLIC
-        ${PAHO_DIR}/MQTTSNPacket/src
-        ${PAHO_DIR}/MQTTSNClient/src
-        ${PAHO_DIR}
-    )
+        target_include_directories(mqttsn_paho PUBLIC
+            ${PAHO_DIR}/MQTTSNPacket/src
+            ${PAHO_DIR}/MQTTSNClient/src
+            ${PAHO_DIR}
+        )
+    else()
+        message(STATUS "Paho MQTT-SN directory found but no source files detected")
+        set(PAHO_DIR "")
+    endif()
 else()
     message(STATUS "Paho MQTT-SN not found; build will proceed without MQTT-SN support")
 endif()
@@ -123,7 +128,7 @@ pico_enable_stdio_uart(picow_network 0)
 pico_add_extra_outputs(picow_network)
 
 # Link libraries + Pico SDK components
-target_link_libraries(picow_network
+target_link_libraries(picow_network PRIVATE
     drivers
     mqttsn_core
     fatfs
@@ -133,5 +138,47 @@ target_link_libraries(picow_network
 
     hardware_spi
     hardware_gpio
-    hardware_adc
+    fatfs
 )
+
+# If Paho was detected, link the library and provide a compile macro so
+# example code can conditionally include Paho headers.
+if (EXISTS "${PAHO_DIR}")
+  target_link_libraries(picow_network PRIVATE mqttsn_paho)
+  target_compile_definitions(picow_network PRIVATE HAVE_PAHO=1)
+endif()
+
+# Subscriber executable
+add_executable(picow_subscriber
+  src/app/subscriber_main.c
+  src/drivers/wifi_driver.c
+  src/drivers/udp_driver.c
+  src/protocol/mqttsn/mqttsn_adapter.c
+  src/protocol/mqttsn/mqttsn_client.c
+  src/drivers/block_transfer.c
+  src/drivers/sd_card.c
+)
+
+pico_enable_stdio_usb(picow_subscriber 1)
+pico_enable_stdio_uart(picow_subscriber 0)
+
+pico_add_extra_outputs(picow_subscriber)
+
+target_include_directories(picow_subscriber PRIVATE 
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${PROJECT_INCLUDE_DIR}
+)
+
+target_link_libraries(picow_subscriber PRIVATE
+    pico_cyw43_arch_lwip_threadsafe_background 
+    pico_stdlib
+    hardware_gpio
+    hardware_spi
+    hardware_adc
+    fatfs
+)
+
+if (EXISTS "${PAHO_DIR}")
+  target_link_libraries(picow_subscriber PRIVATE mqttsn_paho)
+  target_compile_definitions(picow_subscriber PRIVATE HAVE_PAHO=1)
+endif()
