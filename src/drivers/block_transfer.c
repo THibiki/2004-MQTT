@@ -299,8 +299,15 @@ int send_block_transfer_qos(const char *topic, const uint8_t *data, size_t data_
                    part, total_parts, (float)part * 100.0 / total_parts);
         }
         
-        // Small delay between chunks
-        sleep_ms(20);
+        // Check for incoming messages every 20 chunks (including RETX requests)
+        if (part % 20 == 0) {
+            // Quick check for incoming messages without blocking
+            extern int mqttsn_check_incoming_messages(void);
+            mqttsn_check_incoming_messages();
+        }
+        
+        // Minimal delay between chunks for faster transmission
+        sleep_ms(5);
     }
     
     printf("Block transfer completed: %d chunks sent\n", total_parts);
@@ -575,6 +582,7 @@ static int init_block_assembly(uint16_t block_id, uint16_t total_parts) {
     current_block.received_parts = 0;
     current_block.total_length = 0;
     current_block.last_update = to_ms_since_boot(get_absolute_time());
+    current_block.transfer_finished = false;  // Start in active transfer mode
     
     // Allocate tracking arrays
     current_block.received_mask = (bool*)calloc(total_parts, sizeof(bool));
@@ -765,11 +773,24 @@ bool block_transfer_is_active(void) {
 }
 
 void block_transfer_check_timeout(void) {
-    // Check for block assembly timeout (30 seconds)
-    // Mark transfer as finished to enable retransmission
+    // Check for block assembly timeout
+    // Mark transfer as finished to enable retransmission only when appropriate
     if (current_block.block_id != 0 && !current_block.transfer_finished) {
         uint32_t now = to_ms_since_boot(get_absolute_time());
-        if ((now - current_block.last_update) > 30000) {
+        uint32_t elapsed = now - current_block.last_update;
+        
+        // Calculate expected time: ~50ms per chunk with faster transmission
+        uint32_t expected_time = current_block.total_parts * 50;
+        uint32_t min_wait_time = (expected_time > 20000) ? expected_time : 20000;
+        
+        // Only mark as finished if:
+        // 1. No progress for 10+ seconds AND
+        // 2. We've waited at least as long as expected transfer time AND
+        // 3. We've received at least 50% of chunks (to avoid premature triggers)
+        if (elapsed > 10000 && 
+            elapsed > min_wait_time && 
+            current_block.received_parts >= (current_block.total_parts / 2)) {
+            
             uint16_t missing_chunks = current_block.total_parts - current_block.received_parts;
             printf("\n=== ⚠️  INITIAL TRANSFER COMPLETE (TIMEOUT) ===\n");
             printf("Block ID: %d\n", current_block.block_id);
