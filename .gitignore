@@ -9,3 +9,10 @@ build
 
 # Ignore secrets
 **/network_config.h
+
+# Python virtual environment
+venv/
+env/
+ENV/
+*.pyc
+__pycache__/
