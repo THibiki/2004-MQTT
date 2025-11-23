@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pico W MQTT-SN Block Transfer Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            background: white;
+            border-radius: 10px;
+            padding: 25px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        .header h1 {
+            color: #333;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #ccc;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-indicator.connected {
+            background: #10b981;
+        }
+        
+        .status-indicator.disconnected {
+            background: #ef4444;
+            animation: none;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .alert {
+            padding: 12px 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+            font-size: 14px;
+        }
+        
+        .alert-info {
+            background: #dbeafe;
+            color: #1e40af;
+            border-left: 4px solid #3b82f6;
+        }
+        
+        .alert-success {
+            background: #d1fae5;
+            color: #065f46;
+            border-left: 4px solid #10b981;
+        }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        .card h2 {
+            font-size: 18px;
+            color: #333;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #667eea;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+            margin-top: 15px;
+        }
+        
+        .stat-box {
+            background: #f8fafc;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+            margin-top: 5px;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background: #f0f0f0;
+            border-radius: 15px;
+            overflow: hidden;
+            margin: 15px 0;
+            position: relative;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            font-size: 12px;
+        }
+        
+        .message-log {
+            height: 300px;
+            overflow-y: auto;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 10px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+        
+        .log-entry {
+            padding: 5px;
+            margin-bottom: 5px;
+            border-radius: 4px;
+            word-break: break-all;
+        }
+        
+        .log-entry.info {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+        
+        .log-entry.success {
+            background: #d1fae5;
+            color: #065f46;
+        }
+        
+        .log-entry.warning {
+            background: #fef3c7;
+            color: #92400e;
+        }
+        
+        .log-entry.error {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+        
+        .image-preview {
+            width: 100%;
+            max-height: 500px;
+            object-fit: contain;
+            border-radius: 8px;
+            border: 2px solid #e2e8f0;
+            background: #f8fafc;
+        }
+        
+        .image-placeholder {
+            width: 100%;
+            height: 300px;
+            background: #f8fafc;
+            border: 2px dashed #cbd5e1;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #94a3b8;
+            font-size: 14px;
+        }
+        
+        .topic-badge {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-right: 5px;
+        }
+        
+        .timestamp {
+            font-size: 10px;
+            color: #94a3b8;
+            margin-left: 5px;
+        }
+        
+        .full-width {
+            grid-column: 1 / -1;
+        }
+        
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .btn-danger {
+            background: #ef4444;
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>
+                <span class="status-indicator" id="statusIndicator"></span>
+                Pico W MQTT-SN Block Transfer Dashboard
+            </h1>
+            <div class="alert alert-info">
+                <strong>Server Mode:</strong> Connected to Python WebSocket bridge server. No Mosquitto configuration needed!
+            </div>
+            <div class="alert alert-success" id="mqttStatus" style="display: none; margin-top: 10px;">
+                <strong>MQTT:</strong> <span id="mqttStatusText">Connecting...</span>
+            </div>
+        </div>
+        
+        <div class="grid">
+            <div class="card">
+                <h2>📊 Connection Statistics</h2>
+                <div class="stats-grid">
+                    <div class="stat-box">
+                        <div class="stat-label">Status</div>
+                        <div class="stat-value" id="connectionStatus">Connecting...</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Uptime</div>
+                        <div class="stat-value" id="uptime">--</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Messages Received</div>
+                        <div class="stat-value" id="messageCount">0</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Current QoS</div>
+                        <div class="stat-value" id="currentQos">--</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h2>📦 Block Transfer Progress</h2>
+                <div class="stat-box">
+                    <div class="stat-label">Block ID</div>
+                    <div class="stat-value" id="blockId">--</div>
+                </div>
+                <div class="progress-bar" style="margin-top: 15px;">
+                    <div class="progress-fill" id="progressFill" style="width: 0%;">0%</div>
+                </div>
+                <div class="stats-grid" style="margin-top: 15px;">
+                    <div class="stat-box">
+                        <div class="stat-label">Chunks Received</div>
+                        <div class="stat-value" id="chunksReceived">0 / 0</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Data Size</div>
+                        <div class="stat-value" id="dataSize">0 KB</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="card full-width">
+                <h2>📝 Message Log</h2>
+                <button class="btn btn-danger" onclick="clearLog()" style="float: right; margin-top: -40px;">Clear Log</button>
+                <div class="message-log" id="messageLog"></div>
+            </div>
+            
+            <div class="card full-width">
+                <h2>🖼️ Received Image</h2>
+                <div id="imageContainer" class="image-placeholder">
+                    Waiting for image transfer...
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script>
+        const socket = io();
+        let connectionStartTime = null;
+        let messageCount = 0;
+        let currentBlock = {
+            id: null,
+            totalParts: 0,
+            parts: {},
+            startTime: null
+        };
+
+        // WebSocket connection handlers
+        socket.on('connect', () => {
+            log('✅ Connected to dashboard server', 'success');
+            updateStatus(true);
+            connectionStartTime = Date.now();
+        });
+
+        socket.on('disconnect', () => {
+            log('🔌 Disconnected from server', 'warning');
+            updateStatus(false);
+            connectionStartTime = null;
+        });
+
+        // MQTT status updates
+        socket.on('mqtt_status', (data) => {
+            const mqttStatus = document.getElementById('mqttStatus');
+            const mqttStatusText = document.getElementById('mqttStatusText');
+            
+            mqttStatus.style.display = 'block';
+            if (data.connected) {
+                mqttStatusText.textContent = 'Connected to Mosquitto broker';
+                mqttStatus.className = 'alert alert-success';
+                log('✅ MQTT broker connected', 'success');
+            } else {
+                mqttStatusText.textContent = 'Disconnected from Mosquitto broker';
+                mqttStatus.className = 'alert alert-error';
+                log('❌ MQTT broker disconnected', 'error');
+            }
+        });
+
+        // MQTT message handler
+        socket.on('mqtt_message', (data) => {
+            messageCount++;
+            document.getElementById('messageCount').textContent = messageCount;
+
+            if (data.topic === 'pico/chunks') {
+                handleBlockChunk(data);
+            } else if (data.topic === 'pico/test') {
+                const qosMatch = data.text.match(/QoS(\d)/);
+                if (qosMatch) {
+                    document.getElementById('currentQos').textContent = qosMatch[1];
+                }
+                log(`<span class="topic-badge">pico/test</span> ${data.text}`, 'info');
+            } else if (data.topic === 'pico/block') {
+                log(`<span class="topic-badge">pico/block</span> ${data.text}`, 'success');
+            }
+        });
+
+        function handleBlockChunk(data) {
+            const blockId = data.block_id;
+            const partNum = data.part_num;
+            const totalParts = data.total_parts;
+            const chunkData = new Uint8Array(data.data);
+
+            // New block started
+            if (currentBlock.id !== blockId) {
+                currentBlock = {
+                    id: blockId,
+                    totalParts: totalParts,
+                    parts: {},
+                    startTime: Date.now()
+                };
+                document.getElementById('blockId').textContent = blockId;
+                log(`🆕 Receiving block ${blockId}: ${totalParts} parts`, 'info');
+            }
+
+            // Store chunk
+            if (!currentBlock.parts[partNum]) {
+                currentBlock.parts[partNum] = chunkData;
+                
+                const received = Object.keys(currentBlock.parts).length;
+                const progress = (received / totalParts * 100).toFixed(1);
+                
+                document.getElementById('chunksReceived').textContent = `${received} / ${totalParts}`;
+                document.getElementById('progressFill').style.width = `${progress}%`;
+                document.getElementById('progressFill').textContent = `${progress}%`;
+                
+                if (received % 10 === 0 || received === totalParts) {
+                    log(`📦 Progress: ${received}/${totalParts} chunks (${progress}%)`, 'info');
+                }
+
+                // Block complete
+                if (received === totalParts) {
+                    assembleBlock();
+                }
+            }
+        }
+
+        function assembleBlock() {
+            const parts = currentBlock.parts;
+            const totalParts = currentBlock.totalParts;
+            
+            // Check for missing chunks
+            const missing = [];
+            for (let i = 1; i <= totalParts; i++) {
+                if (!parts[i]) missing.push(i);
+            }
+            
+            if (missing.length > 0) {
+                log(`❌ Missing chunks: ${missing.join(', ')}`, 'error');
+                return;
+            }
+
+            // Reassemble
+            let totalSize = 0;
+            for (let i = 1; i <= totalParts; i++) {
+                totalSize += parts[i].length;
+            }
+            
+            const imageData = new Uint8Array(totalSize);
+            let offset = 0;
+            for (let i = 1; i <= totalParts; i++) {
+                imageData.set(parts[i], offset);
+                offset += parts[i].length;
+            }
+
+            const sizeKB = (imageData.length / 1024).toFixed(2);
+            document.getElementById('dataSize').textContent = `${sizeKB} KB`;
+
+            // Detect file type
+            let mimeType = 'application/octet-stream';
+            let ext = '.bin';
+            if (imageData[0] === 0xFF && imageData[1] === 0xD8) {
+                mimeType = 'image/jpeg';
+                ext = '.jpg';
+            } else if (imageData[0] === 0x89 && imageData[1] === 0x50) {
+                mimeType = 'image/png';
+                ext = '.png';
+            } else if (imageData[0] === 0x47 && imageData[1] === 0x49) {
+                mimeType = 'image/gif';
+                ext = '.gif';
+            }
+
+            // Display image
+            const blob = new Blob([imageData], { type: mimeType });
+            const url = URL.createObjectURL(blob);
+            
+            const container = document.getElementById('imageContainer');
+            container.innerHTML = `<img src="${url}" class="image-preview" alt="Received Image">`;
+
+            const elapsed = ((Date.now() - currentBlock.startTime) / 1000).toFixed(1);
+            log(`✅ Block ${currentBlock.id} complete: ${sizeKB} KB received in ${elapsed}s`, 'success');
+            
+            // Reset progress
+            setTimeout(() => {
+                document.getElementById('progressFill').style.width = '0%';
+                document.getElementById('progressFill').textContent = '0%';
+                document.getElementById('chunksReceived').textContent = '0 / 0';
+                currentBlock = { id: null, totalParts: 0, parts: {}, startTime: null };
+            }, 3000);
+        }
+
+        function updateStatus(connected) {
+            const indicator = document.getElementById('statusIndicator');
+            const status = document.getElementById('connectionStatus');
+            
+            if (connected) {
+                indicator.className = 'status-indicator connected';
+                status.textContent = 'Connected';
+                status.style.color = '#10b981';
+            } else {
+                indicator.className = 'status-indicator disconnected';
+                status.textContent = 'Disconnected';
+                status.style.color = '#ef4444';
+            }
+        }
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('messageLog');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            
+            const time = new Date().toLocaleTimeString();
+            entry.innerHTML = `<span class="timestamp">[${time}]</span> ${message}`;
+            
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function clearLog() {
+            document.getElementById('messageLog').innerHTML = '';
+            log('Log cleared', 'info');
+        }
+
+        // Update uptime
+        setInterval(() => {
+            if (connectionStartTime) {
+                const elapsed = Math.floor((Date.now() - connectionStartTime) / 1000);
+                const minutes = Math.floor(elapsed / 60);
+                const seconds = elapsed % 60;
+                document.getElementById('uptime').textContent = `${minutes}m ${seconds}s`;
+            }
+        }, 1000);
+
+        // Initial state
+        updateStatus(false);
+        log('Dashboard ready. Connecting to server...', 'info');
+    </script>
+</body>
+</html>
