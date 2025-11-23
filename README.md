@@ -238,6 +238,30 @@ Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True
 │   ├── requirements.txt        # Python dependencies
 │   └── DASHBOARD_README.md     # Dashboard setup guide
 │
+├── test/                       # Testing framework
+│   ├── unit-tests/             # Unit tests for individual components
+│   │   ├── test_config.py      # Test configuration and utilities
+│   │   ├── test_ut1_udp_transmission.py      # UT1: UDP transmission tests
+│   │   ├── test_ut2_timeout_handling.py      # UT2: Timeout handling tests
+│   │   └── test_ut3_microsd_performance.py   # UT3: MicroSD performance tests
+│   │
+│   ├── intergrated-tests/      # Integration tests for system behavior
+│   │   ├── test_it1_qos0_message_delivery.py              # IT1: QoS 0 message delivery
+│   │   ├── test_it2_qos1_message_delivery.py              # IT2: QoS 1 with PUBACK
+│   │   ├── test_it3_qos1_retry.py                         # IT3: QoS 1 retry with DUP flag
+│   │   ├── test_it4_qos1_dropped_connection.py            # IT4: QoS 1 reconnect recovery
+│   │   ├── test_it5_block_transfer.py                     # IT5: Block transfer reassembly
+│   │   ├── test_it6_block_transfer_fragment_loss.py       # IT6: Fragment loss recovery
+│   │   ├── test_it7_topic_registration.py                 # IT7: Topic registration
+│   │   ├── test_it9_wifi_auto_reconnect.py                # IT9: WiFi auto-reconnect
+│   │   ├── test_it10_topic_registration_after_disconnect.py # IT10: Re-registration
+│   │   ├── test_it11_wifi_connection.py                   # IT11: WiFi connection on boot
+│   │   ├── test_it12_sd_card_operations.py                # IT12: SD card operations
+│   │   └── README.md                                       # Integration testing guide
+│   │
+│   └── Unit-Testing.md         # Unit testing documentation
+│
+│
 └── received/                   # Python scripts for data collection
     └── receive_blocks.py       # Saves received images to disk
 ```
