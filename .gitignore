@@ -9,3 +9,14 @@ build
 
 # Ignore secrets
 **/network_config.h
+
+# Ignore venv folders and python cache
+test-2004/
+__pycache__/
+
+# Python virtual environment
+venv/
+env/
+ENV/
+*.pyc
+__pycache__/

@@ -5,9 +5,12 @@
 #include "pico/cyw43_arch.h"
 #include "hardware/gpio.h"
 
-#include "network_config.h"
-#include "wifi_driver.h"
-#include "mqttsn_client.h"
+#include "config/network_config.h"
+#include "drivers/wifi_driver.h"
+#include "protocol/mqttsn/mqttsn_client.h"
+#include "protocol/mqttsn/mqttsn_adapter.h"
+#include "drivers/block_transfer.h"
+#include "drivers/sd_card.h"
 
 #ifdef HAVE_PAHO
 #include "MQTTSNPacket.h"
@@ -21,6 +24,7 @@
 
 static bool mqtt_subscriber_ready = false;
 static unsigned short subscribed_topicid = 0;
+static unsigned short chunks_topicid = 0;
 
 // Process received PUBLISH messages
 static void process_publish_message(unsigned char *buf, int len) {
@@ -37,17 +41,24 @@ static void process_publish_message(unsigned char *buf, int len) {
                                        buf, len);
     
     if (rc == 1) {
-        printf("\n[SUBSCRIBER] ✓ Message received:\n");
-        printf("  TopicID: %u\n", topic.data.id);
-        printf("  QoS: %d\n", qos);
-        printf("  MsgID: %u\n", msgid);
-        printf("  Payload (%d bytes): ", payloadlen);
-        
-        // Print payload (assume text)
-        for (int i = 0; i < payloadlen; i++) {
-            printf("%c", payload[i]);
+        // Check if this is a block chunk (from pico/chunks topic)
+        if (topic.data.id == chunks_topicid) {
+            // Silently process block chunks (saves memory)
+            process_block_chunk(payload, payloadlen);
+        } else {
+            // Regular message - print details
+            printf("\n[SUBSCRIBER] ✓ Message received:\n");
+            printf("  TopicID: %u\n", topic.data.id);
+            printf("  QoS: %d\n", qos);
+            printf("  MsgID: %u\n", msgid);
+            printf("  Payload (%d bytes)\n", payloadlen);
+            // Regular message - print as text
+            printf("  Message: ");
+            for (int i = 0; i < payloadlen; i++) {
+                printf("%c", payload[i]);
+            }
+            printf("\n");
         }
-        printf("\n");
         
         // Send PUBACK for QoS 1
         if (qos == 1) {
@@ -62,7 +73,6 @@ static void process_publish_message(unsigned char *buf, int len) {
             
             mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, 
                                  puback_buf, sizeof(puback_buf));
-            printf("[SUBSCRIBER] → PUBACK sent (MsgID=%u)\n", msgid);
         }
         
         // Send PUBREC for QoS 2
@@ -99,12 +109,6 @@ static void process_publish_message(unsigned char *buf, int len) {
                 printf("[SUBSCRIBER] ✗ PUBREL not received\n");
             }
         }
-        
-        // Blink LED to indicate message received
-        gpio_put(LED_PIN, 1);
-        sleep_ms(100);
-        gpio_put(LED_PIN, 0);
-        
     } else {
         printf("[SUBSCRIBER] Failed to deserialize PUBLISH\n");
     }
@@ -195,6 +199,9 @@ int main() {
     
     // Main loop
     bool was_connected = false;
+    uint32_t last_keepalive = 0;
+    uint32_t last_status_check = 0;
+    uint32_t last_retx_request = 0;
     
     while (true) {
         wifi_auto_reconnect();
@@ -223,10 +230,62 @@ int main() {
                 if (mqttsn_demo_init(0, "pico_w_subscriber") == 0) {
                     printf("[SUBSCRIBER] ✓ Connected to gateway\n");
                     
-                    // Subscribe to pico/test
-                    if (subscribe_to_topic("pico/test") == 0) {
+                    // Initialize SD card for saving received blocks
+                    printf("[SUBSCRIBER] Initializing SD card...\n");
+                    if (sd_card_init_with_detection() == 0) {
+                        printf("[SUBSCRIBER] ✓ SD card hardware initialized\n");
+                        if (sd_card_mount_fat32() == 0) {
+                            printf("[SUBSCRIBER] ✓ SD card mounted and ready\n");
+                        } else {
+                            printf("[SUBSCRIBER] ⚠️  SD card mount failed (blocks won't be saved)\n");
+                        }
+                    } else {
+                        printf("[SUBSCRIBER] ⚠️  SD card not detected (blocks won't be saved)\n");
+                    }
+                    
+                    // Initialize block transfer system
+                    block_transfer_init();
+                    
+                    // Subscribe to pico/test (for regular messages)
+                    bool test_ok = (subscribe_to_topic("pico/test") == 0);
+                    
+                    // Subscribe to pico/chunks (for block transfers)
+                    printf("\n[SUBSCRIBER] Subscribing to block transfer topic...\n");
+                    unsigned short temp_topicid = 0;
+                    bool chunks_ok = false;
+                    
+                    #ifdef HAVE_PAHO
+                    unsigned char buf[256];
+                    MQTTSN_topicid topic;
+                    topic.type = MQTTSN_TOPIC_TYPE_NORMAL;
+                    topic.data.long_.name = "pico/chunks";
+                    topic.data.long_.len = 11;
+                    
+                    unsigned short msgid = 101;
+                    int len = MQTTSNSerialize_subscribe(buf, sizeof(buf), 0, 1, msgid, &topic);
+                    
+                    if (len > 0) {
+                        int s = mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, buf, len);
+                        if (s == 0) {
+                            int r = mqttsn_transport_receive(buf, sizeof(buf), 5000);
+                            if (r > 0) {
+                                int granted_qos;
+                                unsigned char returncode;
+                                if (MQTTSNDeserialize_suback(&granted_qos, &temp_topicid, &msgid, 
+                                                            &returncode, buf, r) == 1 && returncode == 0) {
+                                    chunks_topicid = temp_topicid;
+                                    chunks_ok = true;
+                                    printf("[SUBSCRIBER] ✓ Subscribed to 'pico/chunks' (TopicID=%u, QoS=%d)\n", 
+                                           chunks_topicid, granted_qos);
+                                }
+                            }
+                        }
+                    }
+                    #endif
+                    
+                    if (test_ok && chunks_ok) {
                         mqtt_subscriber_ready = true;
-                        printf("[SUBSCRIBER] ✓✓✓ Ready to receive messages ✓✓✓\n");
+                        printf("[SUBSCRIBER] ✓✓✓ Ready to receive messages and blocks ✓✓✓\n");
                     } else {
                         printf("[SUBSCRIBER] Subscription failed, retrying...\n");
                         mqttsn_demo_close();
@@ -237,6 +296,38 @@ int main() {
                     sleep_ms(10000);
                 }
             } else {
+                uint32_t now = to_ms_since_boot(get_absolute_time());
+                
+                // Send keepalive PINGREQ every 30 seconds
+                if (now - last_keepalive > 30000) {
+                    unsigned char pingreq[] = {0x02, 0x16};
+                    mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, 
+                                         pingreq, sizeof(pingreq));
+                    last_keepalive = now;
+                }
+                
+                // Check for block transfer timeout and print status every 10 seconds
+                if (now - last_status_check > 10000) {
+                    block_transfer_check_timeout();
+                    
+                    // Print status if transfer is active
+                    if (block_transfer_is_active()) {
+                        block_transfer_print_status();
+                    }
+                    
+                    last_status_check = now;
+                }
+                
+                // Request retransmission every 15 seconds if chunks are missing
+                if (block_transfer_is_active()) {
+                    int missing = block_transfer_get_missing_count();
+                    if (missing > 0 && (now - last_retx_request > 15000)) {
+                        printf("[SUBSCRIBER] 🔄 Requesting retransmission of %d missing chunks...\n", missing);
+                        block_transfer_request_missing_chunks();
+                        last_retx_request = now;
+                    }
+                }
+                
                 // Listen for incoming messages
                 unsigned char buf[512];
                 int rc = mqttsn_transport_receive(buf, sizeof(buf), 100);
@@ -251,8 +342,10 @@ int main() {
                         unsigned char pingresp[] = {0x02, 0x17};
                         mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, 
                                              pingresp, sizeof(pingresp));
+                    } else if (msg_type == 0x17) {  // PINGRESP
+                        // Received response to our PINGREQ - connection alive
                     } else if (msg_type == 0x18) {  // DISCONNECT
-                        printf("[SUBSCRIBER] ✗ Received DISCONNECT\n");
+                        printf("[SUBSCRIBER] ✗ Received DISCONNECT from gateway (keepalive timeout?)\n");
                         mqtt_subscriber_ready = false;
                         mqttsn_demo_close();
                     }

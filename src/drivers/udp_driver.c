@@ -26,7 +26,7 @@ static bool mutex_initialized = false;
 static void udp_recv_callback(void *arg, struct udp_pcb *pcb, struct pbuf *p,
                                const ip_addr_t *addr, u16_t port) {
     if (p != NULL) {
-        printf("[UDP CALLBACK] Received %d bytes from port %s:%d\n", p->len, ip4addr_ntoa(addr),port);
+        // printf("[UDP CALLBACK] Received %d bytes from port %s:%d\n", p->len, ip4addr_ntoa(addr),port);
 
         if (mutex_initialized){
             mutex_enter_blocking(&recv_mutex);
@@ -39,19 +39,10 @@ static void udp_recv_callback(void *arg, struct udp_pcb *pcb, struct pbuf *p,
             // Update recv_len to the actual amount copied
             recv_len = copy_len;
             data_received = true;
-            
-            printf("[UDP CALLBACK] Copied %d bytes to buffer\n", copy_len);
 
             // Signal that data is ready
             if (sem_initialized) {
                 sem_release(&recv_sem);
-            }
-
-        } else {
-            if (data_received){
-                printf("[UDP CALLBACK] Buffer already has data, dropping packet");
-            } else {
-                printf("[UDP CALLBACK] No receive buffer set, dropping packet\n");
             }
         }
 
@@ -69,14 +60,14 @@ int wifi_udp_create(uint16_t local_port){
     if (!sem_initialized) {
         sem_init(&recv_sem, 0, 1);  // Binary semaphore, initial count 0
         sem_initialized = true;
-        printf("[UDP] Semaphore initialized\n");
+        // printf("[UDP] Semaphore initialized\n");
     }
     
     // Initialize mutex on first call
     if (!mutex_initialized) {
         mutex_init(&recv_mutex);
         mutex_initialized = true;
-        printf("[UDP] Mutex initialized\n");
+        // printf("[UDP] Mutex initialized\n");
     }
 
     // Close existing PCB if open
@@ -96,7 +87,7 @@ int wifi_udp_create(uint16_t local_port){
     // Bind to local port
     err_t err = udp_bind(udp_pcb, IP_ADDR_ANY, local_port);
     if (err != ERR_OK){
-        printf("[ERROR] Failed to blind UDP PCB to port %d (Error: %d)\n", local_port, err);
+        // printf("[ERROR] Failed to bind UDP PCB to port %d (Error: %d)\n", local_port, err);
         udp_remove(udp_pcb);
         udp_pcb = NULL;
         
@@ -114,7 +105,7 @@ int wifi_udp_create(uint16_t local_port){
     // Register receive callback
     udp_recv(udp_pcb, udp_recv_callback, NULL);
 
-    printf("[INFO] UDP Socket created and bound to port %d\n", local_port);
+    // printf("[INFO] UDP Socket created and bound to port %d\n", local_port);
     return WIFI_OK;                        
 }
 
@@ -167,7 +158,7 @@ int wifi_udp_send(const char *dest_ip, uint16_t dest_port, const uint8_t *data, 
             }
         }
 
-        printf("[UDP] Sent %zu bytes to %s:%d\n", len, dest_ip, dest_port);
+        // printf("[UDP] Sent %zu bytes to %s:%d\n", len, dest_ip, dest_port);
         return WIFI_OK;
 }
 
@@ -222,7 +213,8 @@ int wifi_udp_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_ms) {
         }
     } else {
         // Blocking mode with timeout
-        printf("[UDP] Waiting for data (timeout: %lu ms)...\n", timeout_ms);
+        // printf("[UDP] Waiting for data (timeout: %lu ms)...\n", timeout_ms);
+        // printf("In wifi_udp_receive BEFORE semaphore and mutex, data_recieved = %d\n", data_received);
 
         // Wait on semaphore with timeout
         bool acquired = sem_acquire_timeout_ms(&recv_sem, timeout_ms);
@@ -232,13 +224,15 @@ int wifi_udp_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_ms) {
             mutex_enter_blocking(&recv_mutex);
         }
 
+        // printf("In wifi_udp_receive AFTER semaphore and mutex, data_recieved = %d\n", data_received);
+
         if (acquired && data_received) {
             result = recv_len;
             data_received = false;
-            printf("[UDP] Received %d bytes\n", result);
+            // printf("[UDP] Received %d bytes\n", result);
         } else {
             result = WIFI_ETIMEDOUT;
-            printf("[UDP] Receive timeout (%lu ms)\n", timeout_ms);
+            //printf("[UDP] Receive timeout (%lu ms)\n", timeout_ms);
         }
         
         recv_buffer = NULL;
@@ -254,7 +248,7 @@ int wifi_udp_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_ms) {
 
 void wifi_udp_close(void){
     if (udp_pcb != NULL){
-        printf("[UDP] Closing socket...\n");
+        // printf("[UDP] Closing socket...\n");
         
         // Lock mutex during cleanup
         if (mutex_initialized) {
