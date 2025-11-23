@@ -190,12 +190,26 @@
         }
         
         .image-preview {
-            width: 100%;
-            max-height: 500px;
+            max-width: 100%;
+            max-height: 100%;
+            width: auto;
+            height: auto;
             object-fit: contain;
             border-radius: 8px;
             border: 2px solid #e2e8f0;
             background: #f8fafc;
+            display: block;
+        }
+        
+        .image-container-wrapper {
+            width: 100%;
+            height: 500px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            padding: 10px;
+            box-sizing: border-box;
         }
         
         .image-placeholder {
@@ -475,7 +489,7 @@
             const url = URL.createObjectURL(blob);
             
             const container = document.getElementById('imageContainer');
-            container.innerHTML = `<img src="${url}" class="image-preview" alt="Received Image">`;
+            container.innerHTML = `<div class="image-container-wrapper"><img src="${url}" class="image-preview" alt="Received Image"></div>`;
 
             const elapsed = ((Date.now() - currentBlock.startTime) / 1000).toFixed(1);
             log(`✅ Block ${currentBlock.id} complete: ${sizeKB} KB received in ${elapsed}s`, 'success');
