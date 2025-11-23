@@ -41,19 +41,17 @@ static void process_publish_message(unsigned char *buf, int len) {
                                        buf, len);
     
     if (rc == 1) {
-        printf("\n[SUBSCRIBER] ✓ Message received:\n");
-        printf("  TopicID: %u\n", topic.data.id);
-        printf("  QoS: %d\n", qos);
-        printf("  MsgID: %u\n", msgid);
-        printf("  Payload (%d bytes)\n", payloadlen);
-        
         // Check if this is a block chunk (from pico/chunks topic)
-        printf("[DEBUG] Checking TopicID: received=%u, chunks_topicid=%u\n", 
-               topic.data.id, chunks_topicid);
         if (topic.data.id == chunks_topicid) {
-            printf("[SUBSCRIBER] Processing block chunk...\n");
+            // Silently process block chunks (saves memory)
             process_block_chunk(payload, payloadlen);
         } else {
+            // Regular message - print details
+            printf("\n[SUBSCRIBER] ✓ Message received:\n");
+            printf("  TopicID: %u\n", topic.data.id);
+            printf("  QoS: %d\n", qos);
+            printf("  MsgID: %u\n", msgid);
+            printf("  Payload (%d bytes)\n", payloadlen);
             // Regular message - print as text
             printf("  Message: ");
             for (int i = 0; i < payloadlen; i++) {
@@ -75,7 +73,6 @@ static void process_publish_message(unsigned char *buf, int len) {
             
             mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, 
                                  puback_buf, sizeof(puback_buf));
-            printf("[SUBSCRIBER] → PUBACK sent (MsgID=%u)\n", msgid);
         }
         
         // Send PUBREC for QoS 2
@@ -112,12 +109,6 @@ static void process_publish_message(unsigned char *buf, int len) {
                 printf("[SUBSCRIBER] ✗ PUBREL not received\n");
             }
         }
-        
-        // Blink LED to indicate message received
-        gpio_put(LED_PIN, 1);
-        sleep_ms(100);
-        gpio_put(LED_PIN, 0);
-        
     } else {
         printf("[SUBSCRIBER] Failed to deserialize PUBLISH\n");
     }

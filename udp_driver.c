@@ -239,7 +239,7 @@ int wifi_udp_receive(uint8_t *buffer, size_t max_len, uint32_t timeout_ms) {
             // printf("[UDP] Received %d bytes\n", result);
         } else {
             result = WIFI_ETIMEDOUT;
-            printf("[UDP] Receive timeout (%lu ms)\n", timeout_ms);
+            //printf("[UDP] Receive timeout (%lu ms)\n", timeout_ms);
         }
         
         recv_buffer = NULL;

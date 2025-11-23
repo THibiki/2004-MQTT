@@ -94,8 +94,6 @@ int send_block_transfer(const char *topic, const uint8_t *data, size_t data_len)
         
         size_t packet_size = sizeof(block_header_t) + chunk_len;
         
-        printf("Sending chunk %d/%d (%zu bytes)\n", part, total_parts, packet_size);
-        
         // Send with QoS 1 - will wait for PUBACK, retry if timeout
         int max_retries = 3;
         int ret = MQTTSN_ERROR;
@@ -116,9 +114,9 @@ int send_block_transfer(const char *topic, const uint8_t *data, size_t data_len)
             return -1;
         }
         
-        // Print progress every 10 chunks
-        if (part % 10 == 0 || part == total_parts) {
-            printf("  Progress: %d/%d chunks sent (%.1f%%)\n", 
+        // Print progress every 50 chunks
+        if (part % 50 == 0 || part == total_parts) {
+            printf("Progress: %d/%d (%.1f%%)\n", 
                    part, total_parts, (float)part * 100.0 / total_parts);
         }
         
@@ -169,8 +167,6 @@ int send_block_transfer_qos(const char *topic, const uint8_t *data, size_t data_
         memcpy(packet + sizeof(block_header_t), data + offset, chunk_len);
         
         size_t packet_size = sizeof(block_header_t) + chunk_len;
-        
-        printf("Sending chunk %d/%d (%zu bytes)\n", part, total_parts, packet_size);
         
         int ret;
         if (qos == 1) {
@@ -258,9 +254,9 @@ int send_block_transfer_qos(const char *topic, const uint8_t *data, size_t data_
             return -1;
         }
         
-        // Print progress every 10 chunks
-        if (part % 10 == 0 || part == total_parts) {
-            printf("  Progress: %d/%d chunks sent (%.1f%%)\n", 
+        // Print progress every 50 chunks
+        if (part % 50 == 0 || part == total_parts) {
+            printf("Progress: %d/%d (%.1f%%)\n", 
                    part, total_parts, (float)part * 100.0 / total_parts);
         }
         
@@ -378,9 +374,11 @@ static int init_block_assembly(uint16_t block_id, uint16_t total_parts) {
     // Clean up previous block if exists
     if (current_block.received_mask) {
         free(current_block.received_mask);
+        current_block.received_mask = NULL;
     }
     if (current_block.data_buffer) {
         free(current_block.data_buffer);
+        current_block.data_buffer = NULL;
     }
     
     // Initialize new block
@@ -392,14 +390,20 @@ static int init_block_assembly(uint16_t block_id, uint16_t total_parts) {
     
     // Allocate tracking arrays
     current_block.received_mask = (bool*)calloc(total_parts, sizeof(bool));
-    current_block.data_buffer = (uint8_t*)malloc(BLOCK_BUFFER_SIZE);
-    
-    if (!current_block.received_mask || !current_block.data_buffer) {
-        printf("Error: Failed to allocate memory for block assembly\n");
+    if (!current_block.received_mask) {
+        printf("ERR: Mask alloc\n");
         return -1;
     }
     
-    printf("Initialized block assembly: ID=%d, parts=%d\n", block_id, total_parts);
+    current_block.data_buffer = (uint8_t*)malloc(BLOCK_BUFFER_SIZE);
+    if (!current_block.data_buffer) {
+        printf("ERR: Buf alloc\n");
+        free(current_block.received_mask);
+        current_block.received_mask = NULL;
+        return -1;
+    }
+    
+    printf("Block %d init: %d parts\n", block_id, total_parts);
     return 0;
 }
 
@@ -410,30 +414,30 @@ void process_block_chunk(const uint8_t *data, size_t len) {
         return;
     }
     
-    block_header_t *header = (block_header_t*)data;
-    const uint8_t *chunk_data = data + sizeof(block_header_t);
-    size_t chunk_data_len = header->data_len;
+    // CRITICAL: Use memcpy to avoid unaligned access (ARM hard fault)
+    block_header_t header;
+    memcpy(&header, data, sizeof(block_header_t));
     
-    printf("Received chunk: Block=%d, Part=%d/%d, Data=%d bytes\n", 
-           header->block_id, header->part_num, header->total_parts, header->data_len);
+    const uint8_t *chunk_data = data + sizeof(block_header_t);
+    size_t chunk_data_len = header.data_len;
     
     // Initialize block assembly if this is a new block
-    if (current_block.block_id != header->block_id) {
-        if (init_block_assembly(header->block_id, header->total_parts) != 0) {
+    if (current_block.block_id != header.block_id) {
+        if (init_block_assembly(header.block_id, header.total_parts) != 0) {
             return;
         }
     }
     
     // Validate part number
-    if (header->part_num < 1 || header->part_num > header->total_parts) {
-        printf("Error: Invalid part number %d (total %d)\n", header->part_num, header->total_parts);
+    if (header.part_num < 1 || header.part_num > header.total_parts) {
+        printf("Error: Invalid part number %d (total %d)\n", header.part_num, header.total_parts);
         return;
     }
     
     // Check if we already received this part
-    uint16_t part_index = header->part_num - 1;
+    uint16_t part_index = header.part_num - 1;
     if (current_block.received_mask[part_index]) {
-        printf("Warning: Duplicate chunk %d ignored\n", header->part_num);
+        // Silently ignore duplicate
         return;
     }
     
@@ -449,13 +453,14 @@ void process_block_chunk(const uint8_t *data, size_t len) {
         current_block.last_update = to_ms_since_boot(get_absolute_time());
         
         // Update total length (for the last chunk, it might be partial)
-        if (header->part_num == header->total_parts) {
+        if (header.part_num == header.total_parts) {
             current_block.total_length = buffer_offset + chunk_data_len;
         }
         
-        printf("Stored chunk %d/%d (progress: %d/%d)\n", 
-               header->part_num, header->total_parts, 
-               current_block.received_parts, current_block.total_parts);
+        // Print progress every 50 chunks
+        if (current_block.received_parts % 50 == 0 || current_block.received_parts == current_block.total_parts) {
+            printf("Progress: %d/%d\n", current_block.received_parts, current_block.total_parts);
+        }
         
         // Check if block is complete
         if (current_block.received_parts == current_block.total_parts) {
