@@ -111,6 +111,9 @@ static void app_start_block_transfer(void){
 
     printf("\n[APP] Block transfer requested (file='%s', topic='%s', QoS='%d')\n", filename, topic, qos);
     printf("[APP] Sending image from SD card to GitHub repo...\n");
+    
+    // Reset sender state from previous transfer
+    block_transfer_reset_sender();
 
     int rc = send_image_file_qos(topic, filename, (uint8_t)qos);
     if (rc == 0){
@@ -164,8 +167,8 @@ int mqttsn_check_incoming_messages(void) {
                                          recv_buf, recv_rc) == 1) {
                 
                 // Check if this is a retransmit request
-                if (payloadlen >= 5 && strncmp((char*)payload, "RETX:", 5) == 0) {
-                    printf("\n[PUBLISHER] 📩 RETX received during transfer!\n");
+                if (payloadlen >= 5 && strncmp((char*)payload, "NACK:", 5) == 0) {
+                    printf("\n[PUBLISHER] 📩 NACK received during transfer!\n");
                     
                     char request_msg[256];
                     int copy_len = (payloadlen < 255) ? payloadlen : 255;
@@ -322,8 +325,8 @@ int main(){
                                    topic.data.id, qos, payloadlen);
                             
                             // Check if this is a retransmit request
-                            if (payloadlen >= 5 && strncmp((char*)payload, "RETX:", 5) == 0) {
-                                printf("\n[PUBLISHER] 📩 Retransmit request received!\n");
+                            if (payloadlen >= 5 && strncmp((char*)payload, "NACK:", 5) == 0) {
+                                printf("\n[PUBLISHER] 📩 NACK request received!\n");
                                 printf("[PUBLISHER] Payload: %.*s\n", payloadlen, payload);
                                 
                                 // Null-terminate payload for string processing
@@ -335,7 +338,7 @@ int main(){
                                 // Handle the retransmit request
                                 block_transfer_handle_retransmit_request(request_msg);
                             } else {
-                                printf("[PUBLISHER] Regular message (not RETX): %.*s\n", 
+                                printf("[PUBLISHER] Regular message (not NACK): %.*s\n", 
                                        payloadlen < 50 ? payloadlen : 50, payload);
                             }
                             

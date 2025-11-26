@@ -337,7 +337,7 @@ int mqttsn_demo_publish_name(const char *topicname, const uint8_t *payload, int 
     unsigned char buf[512];
     MQTTSN_topicid topic;
     
-    topic.type = MQTTSN_TOPIC_TYPE_NORMAL;  
+    topic.type = MQTTSN_TOPIC_TYPE_PREDEFINED;  
     topic.data.id = topic_id_to_use;
 
     // For QoS 0, MsgId = 0; for QoS 1 and 2, use sequential message ID
@@ -432,9 +432,9 @@ int mqttsn_demo_publish_name(const char *topicname, const uint8_t *payload, int 
                     printf("[MQTTSN] PUBLISH decoded: TopicID=%u, QoS=%d, PayloadLen=%d\n",
                            topic.data.id, qos, payloadlen_recv);
                     
-                    // Check if this is a RETX request
-                    if (payloadlen_recv >= 5 && strncmp((char*)payload_ptr, "RETX:", 5) == 0) {
-                        printf("[PUBLISHER] 📩 RETX request during publish wait!\n");
+                    // Check if this is a NACK request
+                    if (payloadlen_recv >= 5 && strncmp((char*)payload_ptr, "NACK:", 5) == 0) {
+                        printf("[PUBLISHER] 📩 NACK request during publish wait!\n");
                         printf("[PUBLISHER] Payload: %.*s\n", payloadlen_recv, payload_ptr);
                         
                         char request_msg[256];
@@ -459,59 +459,72 @@ int mqttsn_demo_publish_name(const char *topicname, const uint8_t *payload, int 
         mqttsn_msg_id++;  // Increment only after acknowledgment
         
     } else if (current_qos == 2) {
-        // QoS 2: Wait for PUBREC
+        // QoS 2: Wait for PUBREC (may need to skip PINGRESP and other messages)
         printf("[MQTTSN] Waiting for PUBREC (QoS 2)...\n");
-        int r = mqttsn_transport_receive(buf, sizeof(buf), 5000);
-        if (r > 0) {
-            printf("[DEBUG] Received %d bytes: ", r);
-            for(int i = 0; i < r && i < 20; i++) {
-                printf("%02x ", buf[i]);
-            }
-            printf("\n");
-            
-            // PUBREC format: [Length][0x0F][MsgId MSB][MsgId LSB]
-            if (r >= 4 && buf[1] == 0x0F) {  // 0x0F = PUBREC
-                unsigned short rec_msgid = (buf[2] << 8) | buf[3];
-                printf("[MQTTSN] ✓ PUBREC received (MsgID=%u)\n", rec_msgid);
+        bool pubrec_received = false;
+        unsigned short rec_msgid = 0;
+        uint32_t start_time = to_ms_since_boot(get_absolute_time());
+        
+        while (!pubrec_received && (to_ms_since_boot(get_absolute_time()) - start_time) < 5000) {
+            int r = mqttsn_transport_receive(buf, sizeof(buf), 1000);
+            if (r > 0) {
+                uint8_t msg_type = (r >= 2) ? buf[1] : 0;
                 
-                // Send PUBREL
-                unsigned char pubrel[4];
-                pubrel[0] = 4;        // Length
-                pubrel[1] = 0x10;     // PUBREL type
-                pubrel[2] = (msgid >> 8);
-                pubrel[3] = (msgid & 0xFF);
-                
-                mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, pubrel, sizeof(pubrel));
-                printf("[MQTTSN] → PUBREL sent (MsgID=%u)\n", msgid);
-                
-                // Wait for PUBCOMP
-                printf("[MQTTSN] Waiting for PUBCOMP...\n");
-                r = mqttsn_transport_receive(buf, sizeof(buf), 5000);
-                if (r > 0) {
-                    printf("[DEBUG] Received %d bytes: ", r);
-                    for(int i = 0; i < r && i < 20; i++) {
-                        printf("%02x ", buf[i]);
-                    }
-                    printf("\n");
-                    
-                    // PUBCOMP format: [Length][0x0E][MsgId MSB][MsgId LSB]
-                    if (r >= 4 && buf[1] == 0x0E) {  // 0x0E = PUBCOMP
-                        unsigned short comp_msgid = (buf[2] << 8) | buf[3];
-                        printf("[MQTTSN] ✓ PUBCOMP received (MsgID=%u) - QoS 2 complete\n", comp_msgid);
-                    } else {
-                        printf("[MQTTSN] ✗ Expected PUBCOMP but received different message\n");
-                        return -8;
-                    }
+                // PUBREC format: [Length][0x0F][MsgId MSB][MsgId LSB]
+                if (r >= 4 && msg_type == 0x0F) {  // 0x0F = PUBREC
+                    rec_msgid = (buf[2] << 8) | buf[3];
+                    printf("[MQTTSN] ✓ PUBREC received (MsgID=%u)\n", rec_msgid);
+                    pubrec_received = true;
+                } else if (msg_type == 0x18) {
+                    // Skip PINGRESP
+                    continue;
                 } else {
-                    printf("[MQTTSN] ✗ PUBCOMP not received (timeout)\n");
-                    return -9;
+                    printf("[MQTTSN] Skipping message type 0x%02X while waiting for PUBREC\n", msg_type);
                 }
-            } else {
-                printf("[MQTTSN] ✗ Expected PUBREC but received different message\n");
-                return -10;
             }
-        } else {
+        }
+        
+        if (!pubrec_received) {
             printf("[MQTTSN] ✗ PUBREC not received (timeout)\n");
+            return -10;
+        }
+        
+        // Send PUBREL
+        unsigned char pubrel[4];
+        pubrel[0] = 4;        // Length
+        pubrel[1] = 0x10;     // PUBREL type
+        pubrel[2] = (msgid >> 8);
+        pubrel[3] = (msgid & 0xFF);
+        
+        mqttsn_transport_send(MQTTSN_GATEWAY_IP, MQTTSN_GATEWAY_PORT, pubrel, sizeof(pubrel));
+        printf("[MQTTSN] → PUBREL sent (MsgID=%u)\n", msgid);
+        
+        // Wait for PUBCOMP (also may need to skip other messages)
+        printf("[MQTTSN] Waiting for PUBCOMP...\n");
+        bool pubcomp_received = false;
+        start_time = to_ms_since_boot(get_absolute_time());
+        
+        while (!pubcomp_received && (to_ms_since_boot(get_absolute_time()) - start_time) < 5000) {
+            int r = mqttsn_transport_receive(buf, sizeof(buf), 1000);
+            if (r > 0) {
+                uint8_t msg_type = (r >= 2) ? buf[1] : 0;
+                
+                // PUBCOMP format: [Length][0x0E][MsgId MSB][MsgId LSB]
+                if (r >= 4 && msg_type == 0x0E) {  // 0x0E = PUBCOMP
+                    unsigned short comp_msgid = (buf[2] << 8) | buf[3];
+                    printf("[MQTTSN] ✓ PUBCOMP received (MsgID=%u) - QoS 2 complete\n", comp_msgid);
+                    pubcomp_received = true;
+                } else if (msg_type == 0x18) {
+                    // Skip PINGRESP
+                    continue;
+                } else {
+                    printf("[MQTTSN] Skipping message type 0x%02X while waiting for PUBCOMP\n", msg_type);
+                }
+            }
+        }
+        
+        if (!pubcomp_received) {
+            printf("[MQTTSN] ✗ PUBCOMP not received (timeout)\n");
             return -11;
         }
         

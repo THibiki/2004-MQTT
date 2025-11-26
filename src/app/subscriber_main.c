@@ -42,9 +42,13 @@ static void process_publish_message(unsigned char *buf, int len) {
     
     if (rc == 1) {
         // Check if this is a block chunk (from pico/chunks topic)
-        if (topic.data.id == chunks_topicid) {
-            // Silently process block chunks (saves memory)
-            process_block_chunk(payload, payloadlen);
+        if (chunks_topicid > 0 && topic.data.id == chunks_topicid) {
+            // Process block chunks with safety check
+            if (payload && payloadlen > 0) {
+                process_block_chunk(payload, payloadlen);
+            } else {
+                printf("[SUBSCRIBER] ✗ Invalid chunk: payload=%p, len=%d\n", payload, payloadlen);
+            }
         } else {
             // Regular message - print details
             printf("\n[SUBSCRIBER] ✓ Message received:\n");
@@ -285,7 +289,7 @@ int main() {
                     
                     if (test_ok && chunks_ok) {
                         mqtt_subscriber_ready = true;
-                        printf("[SUBSCRIBER] ✓✓✓ Ready to receive messages and blocks ✓✓✓\n");
+                        printf("\n[READY] Listening for messages and blocks...\n\n");
                     } else {
                         printf("[SUBSCRIBER] Subscription failed, retrying...\n");
                         mqttsn_demo_close();
@@ -318,13 +322,19 @@ int main() {
                     last_status_check = now;
                 }
                 
-                // Request retransmission every 15 seconds if chunks are missing
+                // Request retransmission every 2 seconds if chunks are missing
                 if (block_transfer_is_active()) {
                     int missing = block_transfer_get_missing_count();
-                    if (missing > 0 && (now - last_retx_request > 15000)) {
-                        printf("[SUBSCRIBER] 🔄 Requesting retransmission of %d missing chunks...\n", missing);
-                        block_transfer_request_missing_chunks();
-                        last_retx_request = now;
+                    if (missing > 0 && (now - last_retx_request > 2000)) {
+                        int result = block_transfer_request_missing_chunks();
+                        if (result == 0) {
+                            // RETX was actually sent (already printed by block_transfer)
+                            last_retx_request = now;
+                        } else if (result == -2) {
+                            // Transfer not finished yet - this is normal, don't spam logs
+                            last_retx_request = now;  // Reset timer to avoid checking every cycle
+                        }
+                        // Other error codes: log already printed by the function
                     }
                 }
                 

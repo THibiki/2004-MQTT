@@ -9,8 +9,8 @@
 #define BLOCK_BUFFER_SIZE 60000     // 60KB buffer - safe for Pico W's 264KB RAM
 #define MAX_SUPPORTED_FILE_SIZE 58000  // Maximum file size we can handle (58KB)
 
-// Block transfer header structure
-typedef struct {
+// Block transfer header structure (packed to avoid alignment issues)
+typedef struct __attribute__((packed)) {
     uint16_t block_id;      // Unique block identifier
     uint16_t part_num;      // Current part number (1-based)
     uint16_t total_parts;   // Total number of parts
@@ -43,5 +43,6 @@ void block_transfer_print_status(void);
 int block_transfer_request_missing_chunks(void);
 int block_transfer_get_missing_count(void);
 int block_transfer_handle_retransmit_request(const char *request_msg);
+void block_transfer_reset_sender(void);
 
 #endif // BLOCK_TRANSFER_H
