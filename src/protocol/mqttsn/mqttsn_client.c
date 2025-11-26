@@ -337,7 +337,7 @@ int mqttsn_demo_publish_name(const char *topicname, const uint8_t *payload, int 
     unsigned char buf[512];
     MQTTSN_topicid topic;
     
-    topic.type = MQTTSN_TOPIC_TYPE_PREDEFINED;  
+    topic.type = MQTTSN_TOPIC_TYPE_NORMAL; 
     topic.data.id = topic_id_to_use;
 
     // For QoS 0, MsgId = 0; for QoS 1 and 2, use sequential message ID

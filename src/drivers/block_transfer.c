@@ -99,6 +99,12 @@ int send_image_file_qos(const char *topic, const char *filename, uint8_t qos) {
     
     printf("[SENDER] ✓ Read file '%s': %zu bytes\n", filename, actual_size);
     
+    // This allows NACK retransmissions to work during the transfer
+    sender.data = file_buffer;
+    sender.data_len = actual_size;
+    sender.active = true;
+    printf("[SENDER] ✓ Sender state activated, ready for transfer and retransmissions\n");
+    
     // Set QoS level
     int prev_qos = mqttsn_get_qos();
     mqttsn_set_qos(qos);
@@ -109,14 +115,15 @@ int send_image_file_qos(const char *topic, const char *filename, uint8_t qos) {
     // Restore previous QoS
     mqttsn_set_qos(prev_qos);
     
-    // Keep buffer alive for retransmissions
-    if (result == 0) {
-        sender.data = file_buffer;
-        sender.data_len = actual_size;
-        sender.active = true;
-        printf("[SENDER] ✓ Transfer complete, ready for retransmissions\n");
-    } else {
+    // On failure, clean up sender state
+    if (result != 0) {
+        printf("[SENDER] ✗ Transfer failed, cleaning up\n");
         free(file_buffer);
+        sender.data = NULL;
+        sender.data_len = 0;
+        sender.active = false;
+    } else {
+        printf("[SENDER] ✓ Transfer complete, keeping buffer for retransmissions\n");
     }
     
     return result;
@@ -147,16 +154,16 @@ int send_block_transfer_qos(const char *topic, const uint8_t *data, size_t data_
     sender.block_id = block_id;
     sender.total_chunks = total_chunks;
     
-    // Send all chunks
+    // Prepare buffer for ONE chunk (header + data)
     uint8_t chunk_buffer[sizeof(block_header_t) + BLOCK_CHUNK_SIZE];
     uint32_t start_time = to_ms_since_boot(get_absolute_time());
     
     for (uint16_t chunk_num = 1; chunk_num <= total_chunks; chunk_num++) {
         // Build chunk header
         block_header_t *header = (block_header_t *)chunk_buffer;
-        header->block_id = block_id;
-        header->part_num = chunk_num;
-        header->total_parts = total_chunks;
+        header->block_id = block_id; // Which transfer
+        header->part_num = chunk_num; // THIS IS CHUNK #Nnumber
+        header->total_parts = total_chunks; //Total chunks
         
         // Calculate data length for this chunk
         size_t offset = (chunk_num - 1) * BLOCK_CHUNK_SIZE;
@@ -182,7 +189,7 @@ int send_block_transfer_qos(const char *topic, const uint8_t *data, size_t data_
         if (rc != 0) {
             printf("[SENDER] ⚠️  Chunk %u/%u failed after 3 attempts, continuing (will be retransmitted via NACK)\n", 
                    chunk_num, total_chunks);
-            // Don't return error - let NACK retransmission handle missing chunks
+            // let NACK retransmission handle missing chunks
         }
         
         // Progress indicator with ETA (at 25, 75, 125... to avoid collision with receiver at 50, 100, 150...)
@@ -197,9 +204,7 @@ int send_block_transfer_qos(const char *topic, const uint8_t *data, size_t data_
                    chunk_num, total_chunks, progress, elapsed/1000, eta/1000);
         }
         
-        // Adaptive pacing:
         // QoS 2 handshake (~200-300ms) provides natural flow control
-        // But add small delay to prevent UDP buffer overflow at gateway/subscriber
         sleep_ms(10);  // Small delay to prevent overwhelming UDP buffers
         
         // Extra pause every 20 chunks to let subscriber process and drain buffers
@@ -251,7 +256,7 @@ void process_block_chunk(const uint8_t *data, size_t len) {
         return;
     }
     
-    // New transfer?
+    // New transfer
     if (!receiver.active || receiver.block_id != block_id) {
         // Validate buffer size first
         size_t required_buffer = (size_t)total_parts * BLOCK_CHUNK_SIZE;
@@ -262,7 +267,6 @@ void process_block_chunk(const uint8_t *data, size_t len) {
         printf("[RECEIVER] Memory required: %zu bytes (buffer=%zu, mask=%zu)\n",
                total_required, required_buffer, required_mask);
         
-        // Be more conservative - WiFi + MQTT stack uses ~90KB
         // Maximum safe allocation is 55KB to leave headroom
         if (total_required > 55000) {
             printf("[RECEIVER] ✗ Transfer too large: %zu bytes (max 55KB)\n", total_required);
@@ -368,7 +372,7 @@ void process_block_chunk(const uint8_t *data, size_t len) {
                receiver.received_count, receiver.total_chunks, progress, missing);
     }
     
-    // Transfer complete?
+    // Transfer complete
     if (receiver.received_count == receiver.total_chunks) {
         printf("\n========================================\n");
         printf("[SUCCESS] Transfer complete: %u chunks\n", receiver.total_chunks);
@@ -390,7 +394,7 @@ void process_block_chunk(const uint8_t *data, size_t len) {
             }
         }
         
-        // Generate filename (use root directory to avoid path issues)
+        // Generate filename
         char filename[64];
         snprintf(filename, sizeof(filename), "block_%u%s", block_id, extension);
         
@@ -429,6 +433,16 @@ int block_transfer_request_missing_chunks(void) {
     
     if (receiver.received_count == receiver.total_chunks) {
         return -2;  // Already complete
+    }
+    
+    // Wait for publisher to finish sending before requesting retransmissions
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    uint32_t time_since_last_chunk = now - receiver.last_update;
+    
+    if (time_since_last_chunk < 3000) {
+        // Publisher still actively sending chunks, don't spam with NACKs yet
+        // Wait until there's a 3-second gap (indicating send complete or stall)
+        return -4;  // Not an error, just waiting
     }
     
     // Only request chunks up to highest received (don't ask for chunks not sent yet)
@@ -479,6 +493,14 @@ int block_transfer_request_missing_chunks(void) {
         } else {
             pos += snprintf(nack_msg + pos, sizeof(nack_msg) - pos, "%d-%d", range_start, range_end);
         }
+        count++;  // Count the last range
+    }
+    
+    // Don't send empty NACK if no chunks are missing (within the range we're checking)
+    if (count == 0) {
+        printf("[NACK] No missing chunks in range 1-%u (still waiting for chunks %u-%u)\n",
+               request_up_to, request_up_to + 1, receiver.total_chunks);
+        return -5;  // Not an error, just nothing to request yet
     }
     
     // Send NACK via MQTT-SN QoS 0 (fast, non-blocking)
@@ -488,11 +510,8 @@ int block_transfer_request_missing_chunks(void) {
     mqttsn_set_qos(prev_qos);
     
     if (rc == 0) {
-        uint16_t missing_count = 0;
-        for (uint16_t i = 0; i < request_up_to && i < receiver.total_chunks; i++) {
-            if (!receiver.chunk_mask[i]) missing_count++;
-        }
-        printf("\n[NACK] Requesting %u missing chunks...\n", missing_count);
+        printf("\n[NACK] Requesting %u missing chunks (up to chunk %u): %s\n", 
+               count, request_up_to, nack_msg);
     } else {
         printf("\n[ERROR] Failed to send NACK (err=%d)\n", rc);
     }

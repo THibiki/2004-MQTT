@@ -328,11 +328,14 @@ int main() {
                     if (missing > 0 && (now - last_retx_request > 2000)) {
                         int result = block_transfer_request_missing_chunks();
                         if (result == 0) {
-                            // RETX was actually sent (already printed by block_transfer)
+                            // NACK was sent successfully
                             last_retx_request = now;
                         } else if (result == -2) {
-                            // Transfer not finished yet - this is normal, don't spam logs
-                            last_retx_request = now;  // Reset timer to avoid checking every cycle
+                            // Transfer complete - no more NACKs needed
+                            last_retx_request = now;
+                        } else if (result == -4) {
+                            // Publisher still sending, wait before NACKing
+                            // Don't reset timer - check again next cycle
                         }
                         // Other error codes: log already printed by the function
                     }
