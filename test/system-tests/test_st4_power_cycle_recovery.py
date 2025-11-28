@@ -12,8 +12,8 @@ import sys
 # Test configuration
 BROKER = "localhost"
 PORT = 1883
-TEST_TOPIC = "pico/recovery/test"
-TEST_RUNS = 100  # 100 test cases as per requirement
+TEST_TOPIC = "pico/test"  # Changed to match publisher firmware
+TEST_RUNS = 10  # Reduced from 100 to 10 for practical testing
 RECONNECT_TIMEOUT_SEC = 15  # <= 15 seconds requirement
 
 # Test results

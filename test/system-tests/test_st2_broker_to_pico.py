@@ -13,7 +13,7 @@ import string
 # Test configuration
 BROKER = "localhost"
 PORT = 1883
-TEST_TOPIC = "pico/test/downlink"  # Topic where Pico subscribes
+TEST_TOPIC = "pico/retransmit"  # Changed to match publisher firmware subscription
 TEST_RUNS = 100  # 100 test cases as per requirement
 TIMEOUT_SEC = 7  # 3-7 seconds requirement (using max)
 
@@ -33,11 +33,15 @@ def run_test():
     print(f"Timeout requirement: 3-7 seconds (using {TIMEOUT_SEC}s)\n")
     
     print("⚠️  PREREQUISITES:")
-    print("   1. Pico W must be running and connected to WiFi")
-    print("   2. Pico W must be subscribed to topic: 'pico/test/downlink'")
+    print("   1. Pico W must be running picow_network.uf2 (publisher firmware)")
+    print("   2. Pico W must be subscribed to topic: 'pico/retransmit'")
+    print("      (This happens automatically during block transfer initialization)")
     print("   3. MQTT-SN Gateway must be running")
     print("   4. Mosquitto broker must be running")
     print("   5. Monitor Pico W serial output to verify message receipt\n")
+    print("⚠️  NOTE: Your publisher firmware subscribes to 'pico/retransmit'")
+    print("   during block transfer mode. Make sure Pico has initialized.")
+    print("   Look for: '[MQTT-SN] Subscribed to retransmit topic' in serial\n")
     
     input("Press Enter when Pico W is ready and subscribed...")
     

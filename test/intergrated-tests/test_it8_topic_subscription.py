@@ -12,7 +12,7 @@ import sys
 BROKER = "localhost"
 PORT = 1883
 TEST_TOPIC = "pico/test"
-TEST_RUNS = 50  # 50 test cases as per requirement
+TEST_RUNS = 100  # Increased to 100 for comprehensive testing
 TIMEOUT_MS = 800  # 800ms requirement
 
 # Test results
@@ -35,13 +35,14 @@ def on_subscribe(client, userdata, mid, granted_qos):
 def run_test():
     """Run IT8 test"""
     print("="*60)
-    print("IT8: Topic Subscription Test")
+    print("IT8: Topic Subscription Test (AUTOMATED)")
     print("="*60)
     print(f"Test runs: {TEST_RUNS}")
     print(f"Timeout requirement: {TIMEOUT_MS}ms\n")
     
     print("⚠️  NOTE: This test verifies MQTT broker subscription.")
-    print("   For MQTT-SN specific SUBSCRIBE testing, observe Pico serial output.\n")
+    print("   For MQTT-SN specific SUBSCRIBE testing, observe Pico serial output.")
+    print("   The test runs automatically - no manual intervention required.\n")
     
     passed = 0
     failed = 0

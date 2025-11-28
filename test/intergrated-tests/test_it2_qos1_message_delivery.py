@@ -11,7 +11,7 @@ import sys
 BROKER = "localhost"
 PORT = 1883
 TEST_TOPIC = "pico/test"
-TEST_RUNS = 10  # Changed from 100 to 10 for faster testing
+TEST_RUNS = 100  # Set to 100 for comprehensive testing
 
 test_results = []
 messages_received = []
